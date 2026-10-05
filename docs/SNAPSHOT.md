@@ -536,3 +536,11 @@ every cycle currently returns HOLD since no setup met strength/price band.
   qb_rows and   edge_rules iteration, not routed into live until after a repeated train/test signature.
 - The $<amount> live treasury stands ready to let agents close paper/live evidence once any setup satisfies
   decider; the system still does not duty-overcommit when there is no honest setup.
+
+## Session 6 — conversation summary (through here, no Wi-Fi details)
+- GUI fixes: brain page tail-reads log, scroll-preserve, cached unlock state, no more full-file redraw; agent page has per-agent tabs with details + policy editor.
+- Brain-path: `skin/brain.py` now calls the persistent opencode server via HTTP, CLI cold-start removed as main path.
+- Edge engine: `trade/edge_rules.py` remains the only real cell evaluator; `trade/edge_rules_update.py` writes logs/digest stored in memory index (last id 800).
+- GUI->Brain settings: periodic edge_rules study checkbox + every_n minutes now exists in config/edge_rules.json.
+- Scout trading profile/agent was added by error and reverted to avoid confusion; currently only agent_1/agent_2 trading agents.
+- No voice: speaking/hearing is not present anywhere. The word "voice" is only the Spice persona (prose) and a future placeholder.
