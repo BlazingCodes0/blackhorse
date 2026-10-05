@@ -1,0 +1,39 @@
+{
+  "comment": "Retention policy for BlackHorse memory. Disk-first; RAM is only a tiny cache.",
+
+  "zones": {
+    "permanent": {
+      "deletable": false,
+      "comment": "NEVER auto-deleted. Lessons, rules, trade outcomes, key decisions, digests, performance.",
+      "kinds": ["lesson", "rule", "trade", "decision", "digest", "performance", "identity"]
+    },
+    "ephemeral": {
+      "deletable": true,
+      "ttl_seconds": 604800,
+      "comment": "MUST be deleted after TTL. Raw observations, debug snapshots, transient signals (7 days).",
+      "kinds": ["observation", "signal_snapshot", "debug", "transient"]
+    }
+  },
+
+  "raw_jsonl": {
+    "comment": "Raw append-only files on disk. Gzip when old, delete when ancient.",
+    "hot_days": 7,
+    "gzip_days": 90,
+    "dirs": ["logs", "memory/raw"]
+  },
+
+  "cleanup": {
+    "interval_hours": 24,
+    "vacuum": true,
+    "report_savings": true
+  },
+
+  "sqlite": {
+    "comment": "Tune for DISK, not RAM. Negative cache_size = kibibytes.",
+    "journal_mode": "WAL",
+    "synchronous": "NORMAL",
+    "cache_size_kib": -2000,
+    "temp_store": "FILE",
+    "mmap_size_bytes": 67108864
+  }
+}

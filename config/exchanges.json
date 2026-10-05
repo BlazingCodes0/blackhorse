@@ -1,0 +1,118 @@
+{
+  "active": "kraken",
+  "exchanges": {
+    "kraken": {
+      "label": "Kraken",
+      "ccxt_id": "kraken",
+      "enabled": true,
+      "credential_fields": [
+        {
+          "name": "api_key",
+          "label": "API Key",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "private_key",
+          "label": "Private Key",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "quote_assets": [
+        "USD",
+        "USDT",
+        "USDC",
+        "EUR",
+        "CAD"
+      ],
+      "public_endpoints": {
+        "ohlc": "https://api.kraken.com/0/public/OHLC",
+        "ticker": "https://api.kraken.com/0/public/Ticker",
+        "assetpairs": "https://api.kraken.com/0/public/AssetPairs"
+      },
+      "permissions_needed": [
+        "query funds",
+        "query open/closed orders",
+        "create & modify orders"
+      ],
+      "permissions_forbidden": [
+        "withdraw funds"
+      ],
+      "notes": "Key + Private Key. Reject keys with withdrawal permission."
+    },
+    "coinbase": {
+      "label": "Coinbase Advanced",
+      "ccxt_id": "coinbase",
+      "enabled": true,
+      "credential_fields": [
+        {
+          "name": "api_key",
+          "label": "API Key Name",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "private_key",
+          "label": "Private Key",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "quote_assets": [
+        "USD",
+        "USDC",
+        "EUR"
+      ],
+      "public_endpoints": {
+        "ohlc": "https://api.exchange.coinbase.com/products/{symbol}/candles",
+        "ticker": "https://api.exchange.coinbase.com/products/{symbol}/ticker"
+      },
+      "permissions_needed": [
+        "view",
+        "trade"
+      ],
+      "permissions_forbidden": [
+        "transfer/withdraw"
+      ],
+      "notes": "CDP key name + secret. No passphrase for Advanced Trade API keys."
+    },
+    "binance": {
+      "label": "Binance",
+      "ccxt_id": "binance",
+      "enabled": true,
+      "credential_fields": [
+        {
+          "name": "api_key",
+          "label": "API Key",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "private_key",
+          "label": "Secret Key",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "quote_assets": [
+        "USDT",
+        "USDC",
+        "FDUSD",
+        "BTC"
+      ],
+      "public_endpoints": {
+        "ohlc": "https://api.binance.com/api/v3/klines",
+        "ticker": "https://api.binance.com/api/v3/ticker/24hr"
+      },
+      "permissions_needed": [
+        "enable reading",
+        "enable spot trading"
+      ],
+      "permissions_forbidden": [
+        "enable withdrawals"
+      ],
+      "notes": "apiKey + secret. Optionally IP-restrict. No withdrawals."
+    }
+  }
+}

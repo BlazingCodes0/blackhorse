@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""spice — talk to Spice, your JARVIS, in a persistent chat.
+
+Spice reasons about what you mean, asks for what's missing (pair / amount /
+paper-or-live), and acts through the gated paths. Agents stay governed by the
+playbook; Spice just runs your house conversationally.
+"""
+import sys
+from pathlib import Path
+
+BH = Path.home() / "blackhorse"
+sys.path.insert(0, str(BH / "trade"))
+sys.path.insert(0, str(BH / "skin"))
+sys.path.insert(0, str(BH / "memory"))
+import spice
+
+print("Spice> online. (type 'exit' to quit)")
+while True:
+    try:
+        q = input("you> ")
+    except (EOFError, KeyboardInterrupt):
+        print("\nSpice> bye")
+        break
+    if q.strip().lower() in ("exit", "quit"):
+        print("Spice> bye")
+        break
+    try:
+        print("Spice>", spice.handle(q))
+    except Exception as e:
+        print("Spice> (error:", e, ")")
