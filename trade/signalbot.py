@@ -49,6 +49,23 @@ def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180) -> dict:
 
     raw = json.loads(RAW_OUT.read_text())
     snap = normalize(raw, meta)
+    # second sidecar strategy for the 15m lane: dayTrade maps wave to 15m
+    try:
+        cfg2 = None
+        cmd2 = [_node(), str(SIDECAR), "--pair", pair, "--strategy", "dayTrade",
+                "--exchange", exchange, "--out", str(RAW_OUT)]
+        r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=timeout, cwd=str(BH))
+        meta2 = json.loads(r2.stdout.strip().splitlines()[-1]) if r2.stdout.strip() else {}
+        if meta2.get("ok"):
+            raw2 = json.loads(RAW_OUT.read_text())
+            snap2 = normalize(raw2, meta2)
+            for ch, label in (("wave","wave15"), ("ripple","ripple5"), ("tide","tide60")):
+                if ch in snap2.get("channels", {}):
+                    snap["channels"][label] = dict(snap2["channels"][ch])
+                    snap["channels"][label]["role"] = f"{snap2['channels'][ch].get('role','mid')}/dayTrade"
+            snap["dayTrade_ts"] = snap2.get("ts")
+    except Exception:
+        pass
     LATEST.parent.mkdir(parents=True, exist_ok=True)
     LATEST.write_text(json.dumps(snap, indent=2))
     return snap
