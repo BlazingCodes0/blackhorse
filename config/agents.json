@@ -6,11 +6,18 @@
       "kind": "trading",
       "profile": "lifecycle",
       "enabled": true,
-      "capital": 45,
+      "capital": 38.0,
       "policy_overrides": {
         "entry_strength_max": 0.3,
         "exit_strength_min": 0.7,
-        "require_tide_context": false
+        "require_tide_context": false,
+        "channels": [
+          "ripple"
+        ],
+        "min_reward_risk": 1.2,
+        "stop_max_pct": 3.0,
+        "risk_per_trade_pct": 2.0,
+        "max_position_pct": 30.0
       },
       "created": "2026-10-04T15:53:25Z",
       "mode": "LIVE",
@@ -25,11 +32,19 @@
       "kind": "trading",
       "profile": "quick",
       "enabled": true,
-      "capital": 12,
+      "capital": 10.0,
       "policy_overrides": {
         "entry_strength_max": 0.3,
         "exit_strength_min": 0.7,
-        "require_tide_context": false
+        "require_tide_context": false,
+        "channels": [
+          "ripple",
+          "wave"
+        ],
+        "min_reward_risk": 1.2,
+        "stop_max_pct": 1.5,
+        "risk_per_trade_pct": 1.0,
+        "max_position_pct": 10.0
       },
       "created": "2026-10-04T16:07:24Z",
       "mode": "LIVE"
@@ -40,8 +55,19 @@
       "kind": "trading",
       "profile": "quick",
       "enabled": true,
-      "capital": 3,
-      "policy_overrides": {},
+      "capital": 10.0,
+      "policy_overrides": {
+        "channels": [
+          "ripple",
+          "wave"
+        ],
+        "entry_strength_max": 0.2,
+        "exit_strength_min": 0.6,
+        "min_reward_risk": 1.2,
+        "stop_max_pct": 1.5,
+        "risk_per_trade_pct": 1.0,
+        "max_position_pct": 10.0
+      },
       "created": "2026-10-05T06:33:22Z",
       "mode": "LIVE",
       "pairs": [
