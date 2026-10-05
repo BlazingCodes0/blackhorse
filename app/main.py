@@ -1611,21 +1611,15 @@ class BlackHorse(QMainWindow):
         fn_item = self.stories_files.currentItem()
         if not fn_item:
             return
-        # ask before destruction
-        ret = QMessageBox.question(self, "Confirm delete",
-                                   f"Delete '{fn_item.text()}'?\nThis cannot be undone.",
-                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if ret != QMessageBox.Yes:
-            return
         title_item = self.stories_list.currentItem()
         if not title_item:
-            help_msg = QMessageBox(); help_msg.setText("no project selected"); help_msg.exec()
+            QMessageBox.information(self, "No project", "Select a project first.")
             return
         project_title = title_item.text()
         section_item = self.stories_sections.currentItem() if hasattr(self, 'stories_sections') else None
         section = section_item.text() if section_item else 'notes'
-        # clean from JSON chapters if it was a chapter title
         root = pathlib.Path.home()/"blackhorse"/"logs"/"storybook"
+        # find target JSON file and optional physical file
         target_json = None
         for f in root.glob('*.json'):
             try:
@@ -1633,26 +1627,39 @@ class BlackHorse(QMainWindow):
                 if meta.get('title')==project_title:
                     target_json=f; break
             except Exception: pass
+        slug=hashlib.md5(project_title.strip().encode()).hexdigest()[:8]
+        folder = root/f"{slug}_project/{section}"
+        match=None
+        if folder.is_dir():
+            for f in folder.iterdir():
+                if fn_item.text() in f.name or f.name.startswith(fn_item.text()):
+                    match=f; break
+        # tell the user exactly what is about to be removed
+        msg_lines = []
+        if section == 'chapters':
+            msg_lines.append(f"Chapter entry will be removed from JSON: target_json.name if target_json else '(no json)'")
+        if match:
+            msg_lines.append(f"File on disk will be removed: {match}")
+        if not msg_lines:
+            msg_lines.append("No matching file was found for the highlighted entry.")
+        msg_lines.append(f"Project: {project_title}")
+        msg_lines.append(f"Section: {section}")
+        msg = "\n".join(msg_lines) + "\n\nDo you want me to continue?"
+        ret = QMessageBox.question(self, "Confirm delete", msg,
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ret != QMessageBox.Yes:
+            return
+        # perform delete
         if target_json and section == 'chapters':
             try:
                 meta=json.loads(target_json.read_text())
                 meta['chapters']=[c for c in meta.get('chapters',[]) if not (c.get('title','').startswith(fn_item.text()) or c.get('text','').startswith(fn_item.text()))]
                 target_json.write_text(json.dumps(meta,indent=2))
             except Exception: pass
-        # delete file if present
-        slug=hashlib.md5(project_title.strip().encode()).hexdigest()[:8]
-        folder = root/f"{slug}_project/{section}"
-        possible = list(folder.iterdir()) if folder.is_dir() else []
-        match=None
-        for f in possible:
-            if fn_item.text() in f.name or f.name.startswith(fn_item.text()):
-                match=f; break
         if match and match.exists():
             match.unlink()
-        # refresh views
         try: self._stories_show_section()
         except Exception: pass
-        # final safety: clear the selected item if we still have it
         try:
             self.stories_files.takeItem(self.stories_files.currentRow())
         except Exception: pass
