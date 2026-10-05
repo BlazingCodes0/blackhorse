@@ -470,6 +470,30 @@ def reject(name: str) -> str:
     return f"no pending tool '{name}'"
 
 
+
+@tool("adabot", "Run the real SignalBot advisor across a pair and return support/resistance, price floors, and lane forecasts (spot, no execution).",
+      {"pair": "string e.g. DOT/USD or BTC/USD", "intervals": "e.g. '60,240' or '60,240,1440'"})
+def adabot(pair, intervals="60,240,1440"):
+    import subprocess as _sp, json as _j
+    valid = {"1","5","15","60","240","1440"}
+    ivs = []
+    for raw in str(intervals).split(","):
+        raw = str(raw).strip().replace("m","")
+        if raw in valid:
+            ivs.append(raw)
+    if not ivs:
+        return "(error: no valid intervals)"
+    kpair = str(pair).replace("/", "").upper()
+    if kpair.startswith("BTC"): kpair = kpair.replace("BTC", "XBT", 1)
+    qf = Path.home()/"qubitFlowBeta"/"qubitFlowBeta"/"SignalBot"/"adaBot"
+    script = f"const {{runAdaBot}}=require('{qf}/adaBot.js');runAdaBot({{pair:'{kpair}',intervals:{ivs}}}).then(r=>process.stdout.write(JSON.stringify(r))).catch(e=>{{console.error(e.message);process.exit(1);}})"
+    try:
+        r = _sp.run(["node","-e", script], cwd=str(qf.parent), capture_output=True, text=True, timeout=120)
+        return _j.dumps(_j.loads(r.stdout), indent=1) if r.returncode == 0 else r.stderr.strip()[:240]
+    except Exception as e:
+        return f"adabot error: {e}"
+
+
 if __name__ == "__main__":
     import sys
     cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
