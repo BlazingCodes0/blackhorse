@@ -64,24 +64,6 @@ PROFILES = {
             "require_tide_context": False,
         },
     },
-    "scout": {
-        "label": "Scout — discover candidate setups, paper evidence, not PROVEN until repeated",
-        "description": "Wide, exploratory profile. It watches the fresh signal stream for early floor/roof setups and will propose paper trades even when there is no proven cell yet. Those fills have to be measured as candidates; they do not claim a proven edge until they pass the train/test repeat check.",
-        "kind": "trading",
-        "cfg": {
-            "channels": ["ripple", "wave", "tide"],
-            "entry_strength_max": 0.30,
-            "exit_strength_min": 0.70,
-            "min_reward_risk": 1.2,
-            "stop_max_pct": 3.0,
-            "stop_buffer_pct": 0.6,
-            "risk_per_trade_pct": 2.0,
-            "max_position_pct": 20.0,
-            "require_tide_context": False,
-            "require_proven_edge": False,
-            "spot_only": True,
-        },
-    },
     "lifecycle": {
         "label": "Lifecycle (spot) — trade the REAL proven cells",
         "description": "Spot-only money path built on the REAL walk-forward result: the 60m "
