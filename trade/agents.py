@@ -64,6 +64,24 @@ PROFILES = {
             "require_tide_context": False,
         },
     },
+    "scalp15": {
+        "label": "Scalper 15m — 15m real edge from dayTrade wave",
+        "description": "Uses the dayTrade-composed 15m wave lane. Trades early, small, from 15m range/floor/roof data; same Heart/spot-only chain.",
+        "kind": "trading",
+        "cfg": {
+            "channels": ["wave15"],
+            "entry_strength_max": 0.30,
+            "exit_strength_min": 0.70,
+            "min_reward_risk": 1.2,
+            "stop_max_pct": 3.0,
+            "stop_buffer_pct": 0.6,
+            "risk_per_trade_pct": 2.0,
+            "max_position_pct": 15.0,
+            "require_tide_context": False,
+            "require_proven_edge": False,
+            "spot_only": True,
+        },
+    },
     "lifecycle": {
         "label": "Lifecycle (spot) — trade the REAL proven cells",
         "description": "Spot-only money path built on the REAL walk-forward result: the 60m "

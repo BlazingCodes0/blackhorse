@@ -6,7 +6,7 @@
       "kind": "trading",
       "profile": "lifecycle",
       "enabled": true,
-      "capital": 39.0,
+      "capital": 45,
       "policy_overrides": {
         "entry_strength_max": 0.3,
         "exit_strength_min": 0.7,
@@ -19,9 +19,9 @@
       "id": "agent_2",
       "name": "LiveTest30",
       "kind": "trading",
-      "profile": "lifecycle",
+      "profile": "quick",
       "enabled": true,
-      "capital": 30.0,
+      "capital": 12,
       "policy_overrides": {
         "entry_strength_max": 0.3,
         "exit_strength_min": 0.7,
@@ -36,11 +36,22 @@
       "kind": "trading",
       "profile": "quick",
       "enabled": true,
-      "capital": 10.0,
+      "capital": 3,
       "policy_overrides": {},
       "created": "2026-10-05T06:33:22Z",
       "mode": "LIVE"
+    },
+    "agent_5": {
+      "id": "agent_5",
+      "name": "Scalper15",
+      "kind": "trading",
+      "profile": "scalp15",
+      "enabled": true,
+      "capital": 10,
+      "mode": "LIVE",
+      "policy_overrides": {},
+      "created": "2026-10-05T19:18:50Z"
     }
   },
-  "next_id": 5
+  "next_id": 6
 }
