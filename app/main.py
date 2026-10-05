@@ -1383,7 +1383,7 @@ class BlackHorse(QMainWindow):
             le_pairs = _edit('pairs', ','.join(a.get('pairs') or []))
             le_capital = _edit('capital', str(a.get('capital', 0)))
             pv.addLayout(grid)
-            def _save_overrides(aid=a['id'], le_channels=le_channels, le_entry=le_entry, le_exit=le_exit, le_rr=le_rr, le_stop=le_stop, le_risk=le_risk, le_maxpos=le_maxpos, le_pairs=le_pairs, le_capital=le_capital):
+            def _save_overrides(_checked=False, aid=a['id'], le_channels=le_channels, le_entry=le_entry, le_exit=le_exit, le_rr=le_rr, le_stop=le_stop, le_risk=le_risk, le_maxpos=le_maxpos, le_pairs=le_pairs, le_capital=le_capital):
                 try:
                     agents, _ = self._agents_mod()
                     if le_channels.text().strip():
