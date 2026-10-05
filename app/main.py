@@ -1442,7 +1442,9 @@ class BlackHorse(QMainWindow):
         self.stories_list = QListWidget(); self.stories_list.currentRowChanged.connect(self._stories_show)
         v.addWidget(self.stories_list, 1)
         self.stories_view = QTextEdit(); self.stories_view.setReadOnly(True); self.stories_view.setFont(QFont("Monospace", 9))
-        v.addWidget(self.stories_view, 2)
+        v.addWidget(QLabel("— project details —")); v.addWidget(self.stories_view, 2)
+        self.stories_chat = QTextEdit(); self.stories_chat.setReadOnly(True); self.stories_chat.setFont(QFont("Monospace", 9))
+        v.addWidget(QLabel("— project conversation (remembered) —")); v.addWidget(self.stories_chat, 2)
         row2 = QHBoxLayout()
         self.stories_prompt = QLineEdit(); self.stories_prompt.returnPressed.connect(self._stories_send)
         self.stories_prompt.setPlaceholderText("Ask for a scene, add a chapter, or open a project like the book...")
@@ -1476,6 +1478,8 @@ class BlackHorse(QMainWindow):
                 meta=json.loads(f.read_text())
                 if meta.get("title")==title:
                     self.stories_view.setPlainText(json.dumps(meta, indent=1))
+                    thread = meta.get("thread") or []
+                    self.stories_chat.setPlainText("\n\n".join(f"YOU: {t.get('q') or ''}\nSPICE: {t.get('a') or ''}" for t in thread) or "(no remembered conversation yet)")
                     return
             except Exception: pass
 
@@ -1492,15 +1496,34 @@ class BlackHorse(QMainWindow):
                 return f"<b>Spice:</b> {spice.handle(text)}"
             except Exception as e:
                 return f"<b>error:</b> {e}"
-        # use a fake pending in console view? simplest append here:
+        # save into this project's thread for later
+        import pathlib as _pb, json as _json, time as _t
         try:
-            from PyQt6.QtCore import QTimer
-            from PyQt6.QtGui import QTextCursor
+            items=[x.text() for x in [self.stories_list.currentItem()] if x]
+            if items:
+                root=_pb.Path.home()/"blackhorse"/"logs"/"storybook"
+                for f in root.glob('*.json'):
+                    try:
+                        meta=_json.loads(f.read_text())
+                        if meta.get('title')==items[0]:
+                            meta.setdefault('thread',[]).append({"q": text, "a": "", "ts": _t.strftime('%Y-%m-%dT%H:%M:%SZ', _t.gmtime())})
+                            f.write_text(_json.dumps(meta, indent=2)); break
+                    except Exception: pass
             reply = _work()
-            self.stories_view.append(f"<b>you:</b> {text}\n{reply}")
-            self.stories_view.verticalScrollBar().setValue(self.stories_view.verticalScrollBar().maximum())
+            current=[x.text() for x in [self.stories_list.currentItem()] if x]
+            if current:
+                root = _pb.Path.home()/"blackhorse"/"logs"/"storybook"
+                for f in root.glob('*.json'):
+                    try:
+                        meta=_json.loads(f.read_text())
+                        if meta.get('title')==current[0]:
+                            if meta.get('thread'): meta['thread'][-1]['a']=reply
+                            f.write_text(_json.dumps(meta, indent=2)); break
+                    except Exception: pass
+            self._stories_show()
+            self.stories_chat.verticalScrollBar().setValue(self.stories_chat.verticalScrollBar().maximum())
         except Exception as e:
-            self.stories_view.append(f"<b>error:</b> {e}")
+            self.stories_chat.append(f"<b>error:</b> {e}")
 
     def _build_skin(self):
         from PyQt6.QtWidgets import QScrollArea
