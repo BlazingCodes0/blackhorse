@@ -563,15 +563,15 @@ def route_images_apply(src_dir, dst_folder, items):
     return json.dumps({"copied_dir": dst_folder, "count": len(out), "items": out}, indent=1)
 
 
-@tool("storybook", "Create/manage BlackHorse writing projects: book/script, chapters, characters, details. Use actions create_project, add_character_detail, add_chapter, show_characters, show_chapters, show_project.",
-      {"action": "create_project|add_character_detail|add_chapter|show_characters|show_chapters|show_project",
+@tool("storybook", "Create/manage BlackHorse writing projects: book/script, chapters, characters, details. Use actions create_project, add_character_detail, add_chapter, show_characters, show_chapters, show_project, move_chapter, delete_chapter, move_file, delete_file.",
+      {"action": "create_project|add_character_detail|add_chapter|show_characters|show_chapters|show_project|move_chapter|delete_chapter|move_file|delete_file",
        "project": "project name (optional for create)",
        "character": "character name for add_character_detail",
        "detail": "text detail for add_character_detail",
        "chapter": "chapter/slug name",
        "text": "chapter note/known summary text"})
 def storybook(action, project="default", character=None, detail=None, chapter=None, text=None):
-    import json, hashlib, pathlib, time
+    import json, hashlib, pathlib, time, re, shutil
     root = pathlib.Path.home()/"blackhorse"/"logs"/"storybook"
     root.mkdir(parents=True, exist_ok=True)
     slug = hashlib.md5((project or 'default').strip().encode()).hexdigest()[:8]
