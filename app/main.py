@@ -1562,8 +1562,30 @@ class BlackHorse(QMainWindow):
                 return f"<b>Spice:</b> {spice.handle(text)}"
             except Exception as e:
                 return f"<b>error:</b> {e}"
+        # if a section is selected, the prompt also writes a note into that folder
+        import pathlib as _pb, json as _json, time as _t, hashlib as _hx, re as _re
+        try:
+            project_title = (self.stories_list.currentItem().text() if self.stories_list.currentItem() else None)
+            section_item = self.stories_sections.currentItem() if hasattr(self, 'stories_sections') else None
+            if project_title and section_item and section_item.text() in ('chapters','ideas','scenes','notes','characters'):
+                slug = _hx.md5(project_title.strip().encode()).hexdigest()[:8]
+                folder = _pb.Path.home()/"blackhorse"/"logs"/"storybook"/f"{slug}_project"/section_item.text()
+                try: folder.mkdir(parents=True, exist_ok=True)
+                except Exception: pass
+                fname = _t.strftime('%Y-%m-%dT%H-%M-%S', _t.gmtime()).replace(':','-') + '.md'
+                folder.joinpath(fname).write_text(text)
+                # also push into project JSON chapters/notes if applicable
+                for f in (_pb.Path.home()/"blackhorse"/"logs"/"storybook").glob('*.json'):
+                    try:
+                        meta2=_json.loads(f.read_text())
+                        if meta2.get('title')==project_title:
+                            if section_item.text() == 'chapters':
+                                meta2.setdefault('chapters',[]).append({"title": text.splitlines()[0][:40] if text else 'chapter note', "text": text})
+                                f.write_text(_json.dumps(meta2, indent=2))
+                            break
+                    except Exception: pass
+        except Exception: pass
         # save into this project's thread for later
-        import pathlib as _pb, json as _json, time as _t
         try:
             items=[x.text() for x in [self.stories_list.currentItem()] if x]
             if items:
