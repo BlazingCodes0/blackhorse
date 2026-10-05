@@ -562,6 +562,52 @@ def route_images_apply(src_dir, dst_folder, items):
             out.append({"src": s, "dst": d, "error": str(e)})
     return json.dumps({"copied_dir": dst_folder, "count": len(out), "items": out}, indent=1)
 
+
+@tool("storybook", "Create/manage BlackHorse writing projects: book/script, chapters, characters, details. Use actions create_project, add_character_detail, add_chapter, show_characters, show_chapters, show_project.",
+      {"action": "create_project|add_character_detail|add_chapter|show_characters|show_chapters|show_project",
+       "project": "project name (optional for create)",
+       "character": "character name for add_character_detail",
+       "detail": "text detail for add_character_detail",
+       "chapter": "chapter/slug name",
+       "text": "chapter note/known summary text"})
+def storybook(action, project="default", character=None, detail=None, chapter=None, text=None):
+    import json, hashlib, pathlib, time
+    root = pathlib.Path.home()/"blackhorse"/"logs"/"storybook"
+    root.mkdir(parents=True, exist_ok=True)
+    slug = hashlib.md5((project or 'default').strip().encode()).hexdigest()[:8]
+    fp = root/f"{slug}.json"
+    def _load():
+        if not fp.exists():
+            return {"title": project, "created": time.strftime("%Y-%m-%dT%H:%M:%SZ"), "chapters": [], "characters": {}}
+        try: return json.loads(fp.read_text())
+        except Exception: return {"title": project, "chapters": [], "characters": {}}
+    data = _load()
+    if action == "create_project":
+        data["title"] = project or data.get("title") or "untitled"
+        fp.write_text(json.dumps(data, indent=2))
+        return f"created/opened project '{data['title']}'"
+    if action == "add_character_detail":
+        if not character or not detail:
+            return "(error: need character and detail)"
+        data["characters"].setdefault(character, []).append({"detail": detail, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ")})
+    elif action == "add_chapter":
+        if not chapter:
+            return "(error: need chapter title)"
+        data["chapters"].append({"title": chapter, "text": (text or "")[:2000], "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ")})
+    elif action == "show_characters":
+        fp.write_text(json.dumps(data, indent=2))
+        return json.dumps(data.get("characters", {}), indent=1)[:1900]
+    elif action == "show_chapters":
+        fp.write_text(json.dumps(data, indent=2))
+        return json.dumps(data.get("chapters", []), indent=1)[:1900]
+    elif action == "show_project":
+        fp.write_text(json.dumps(data, indent=2))
+        return json.dumps({"title": data["title"], "chapters": data["chapters"][:5], "characters": {k:v[:5] for k,v in data["characters"].items()}}, indent=1)[:1900]
+    else:
+        return "(error: unknown action)"
+    fp.write_text(json.dumps(data, indent=2))
+    return f"saved to project '{data['title']}'"
+
 if __name__ == "__main__":
     import sys
     cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
