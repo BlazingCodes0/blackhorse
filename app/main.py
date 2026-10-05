@@ -623,6 +623,9 @@ class BlackHorse(QMainWindow):
         self.signal_status = QLabel("—")
         sig_row.addWidget(self.signal_status); sig_row.addStretch(1)
         v.addLayout(sig_row)
+        row_int = QHBoxLayout(); row_int.addWidget(QLabel("intervals"))
+        self.interval_input = QLineEdit("60m,240m,1440m"); self.interval_input.setPlaceholderText("e.g. 60m,15m,60m")
+        row_int.addWidget(self.interval_input); row_int.addStretch(1); v.addLayout(row_int)
         self.signal_view = QTextEdit(); self.signal_view.setReadOnly(True); self.signal_view.setMaximumHeight(150)
         self.signal_view.setFont(QFont("Monospace", 9))
         v.addWidget(self.signal_view)
@@ -944,7 +947,8 @@ class BlackHorse(QMainWindow):
                 if str(Path.home()/"blackhorse"/"trade") not in _s.path:
                     _s.path.insert(0, str(Path.home()/"blackhorse"/"trade"))
                 import signalbot as _sig
-                _sig.run(pair="DOT/USD", strategy="swing")
+                ivs = [x.strip() for x in (self.interval_input.text() if hasattr(self, 'interval_input') else '').split(',') if x.strip()]
+                _sig.run(pair="DOT/USD", strategy="swing", channels=ivs or None)
             except Exception as e:
                 self._sig_res.err = str(e)
             finally:
