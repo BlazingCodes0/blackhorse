@@ -226,6 +226,8 @@ class BlackHorse(QMainWindow):
         bh = pathlib.Path.home()/"blackhorse"
         try:
             s = json.loads((bh/"logs"/"loop_state.json").read_text())
+            if hasattr(self, 'loop_status'):
+                self.loop_status.setText("loop RUNNING (backend night-shift)" if s.get('heartbeat')=='ok' else "loop HALTED (backend no heartbeat)")
             sig_path = bh/"logs"/"signal_latest.json"
             sig = json.loads(sig_path.read_text()) if sig_path.exists() else {}
             ch = sig.get("channels", {})
