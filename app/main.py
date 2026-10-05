@@ -1480,9 +1480,8 @@ class BlackHorse(QMainWindow):
                     # middle pane is for reading the story, not JSON
                     lines=[]
                     for ch in meta.get("chapters", []):
-                        lines.append(f"CHAPTER — {ch.get('title','untitled')}
-{ch.get('text','')[:3000]}
-")
+                        ch_text = (ch.get("text") or "")[:3000]
+                        lines.append(f"CHAPTER — {ch.get('title','untitled')}\n{ch_text}\n")
                     if not lines:
                         lines.append("(no chapters yet — add one with the prompt, or it will appear here as chapters.json grows)")
                     for ch in meta.get("characters", {}).items():
