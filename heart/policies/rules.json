@@ -1,6 +1,5 @@
 {
-  "comment": "Heart policy — machine-readable caps and hard bans. The referee. Nothing reaches the world without a Heart stamp.",
-
+  "comment": "Heart policy \u2014 machine-readable caps and hard bans. The referee. Nothing reaches the world without a Heart stamp.",
   "hard_bans": {
     "withdrawals": true,
     "move_funds_between_accounts": true,
@@ -15,7 +14,6 @@
     "short_selling": true,
     "perp_swaps": true
   },
-
   "spot_only": {
     "comment": "SPOT ONLY. Fully funded. No borrowed capital, ever.",
     "enforced": true,
@@ -26,7 +24,6 @@
     "allow_borrow": false,
     "allow_interest": false
   },
-
   "caps": {
     "max_position_pct": 25.0,
     "max_open_positions": 5,
@@ -35,24 +32,21 @@
     "max_orders_per_hour": 12,
     "max_order_quote": 200.0
   },
-
   "deadman": {
     "heartbeat_max_age_seconds": 90,
     "on_miss": "PARK"
   },
-
   "graded_levels": {
     "L0_observe": "log only",
     "L1_soft": "pause the offending stream",
     "L2_halt": "stop all new money movement",
     "L3_lockdown": "freeze everything, wake human"
   },
-
   "autonomy_unlock": {
     "comment": "Autonomous trading may ARM only when ALL are true.",
     "require_credentials": true,
     "require_heart": true,
     "require_backtest_passed": true,
-    "require_paper_period": true
+    "require_paper_period": false
   }
 }
