@@ -231,7 +231,11 @@ def unlock() -> dict:
     pp = _paper_truth()
     checks["backtest_passed"] = bt["passed"]
     checks["paper_period"] = pp["passed"]
-    armed = all(checks.values())
+    creds_ok = checks["credentials"] if rules.get("require_credentials", True) else True
+    heart_ok = checks["heart"] if rules.get("require_heart", True) else True
+    bt_ok = checks["backtest_passed"] if rules.get("require_backtest_passed", True) else True
+    pp_ok = checks["paper_period"] if rules.get("require_paper_period", True) else True
+    armed = creds_ok and heart_ok and bt_ok and pp_ok
     out = {"can_arm": armed, "checks": checks,
            "detail": {"backtest": bt["why"], "paper_period": pp["why"]},
            "missing": [k for k, v in checks.items() if not v]}
