@@ -525,3 +525,14 @@ decision HOLD, who has HOLD across 6h? no, 0h, can_arm false. Night-shift runs
 in background (pid). Decider path tested DECIDER-broker HOLD with reason
 "cannot SELL what we do not hold / fee gate / strength outside buy+sell band";
 every cycle currently returns HOLD since no setup met strength/price band.
+
+## Session 6 — last durable add: how Spice should reason
+- We ran `trade/edge_rules.py` over existing snapshot rows; it already scores variable cells
+  (rangeSignal, trend, maSpread sign/direction, support recency, entry/exit strength) with fee/slippage.
+- Observed: no PROVEN-BOTH from raw rules; several high-test but sample-starved (edge-decays/no-edge).
+  Count of robust edge still reduces to 60m BUY/SELL only, with ETH/SOL/XRP 240m BUY from per-pair tests.
+- Added a durable memory rule to Spice/growth: to justify an edge, every item must show how train→test
+  performs net of fees/slippage; small cells n<10 are not proven; hypothesis should be Spice-talkable via
+  qb_rows and   edge_rules iteration, not routed into live until after a repeated train/test signature.
+- The $70 live treasury stands ready to let agents close paper/live evidence once any setup satisfies
+  decider; the system still does not duty-overcommit when there is no honest setup.
