@@ -591,6 +591,7 @@ def storybook(action, project="default", character=None, detail=None, chapter=No
             (proj_dir/"scenes").mkdir(parents=True, exist_ok=True)
             (proj_dir/"characters").mkdir(parents=True, exist_ok=True)
             (proj_dir/"notes").mkdir(parents=True, exist_ok=True)
+            (proj_dir/"chapters").mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
         return f"created/opened project '{data['title']}' with dirs: project/ideas, project/scenes, project/characters, project/notes"
