@@ -42,7 +42,7 @@ class BlackHorse(QMainWindow):
         title.setStyleSheet("color:#6b7280")
         side.addWidget(title)
         self.nav = QListWidget(); self.nav.setObjectName("nav")
-        for page in ["Dashboard", "Skin (Defense)", "Brain (Decide)", "Trade (Exchange)", "Agents", "Heart (Filter)", "Console", "Motar (Agents)"]:
+        for page in ["Dashboard", "Skin (Defense)", "Brain (Decide)", "Trade (Exchange)", "Agents", "Heart (Filter)", "Console", "Stories", "Motar (Agents)"]:
             self.nav.addItem(QListWidgetItem(page))
         self.nav.setMaximumWidth(180)
         self.nav.currentRowChanged.connect(self.switch_page)
@@ -62,6 +62,7 @@ class BlackHorse(QMainWindow):
         cl.addWidget(self._build_agents())
         cl.addWidget(self._build_heart())
         cl.addWidget(self._build_console())
+        cl.addWidget(self._build_stories())
         cl.addWidget(self._build_placeholder("Motar (Agents)", "Agent workers — coming soon."))
         lay.addWidget(content)
         self.nav.setCurrentRow(1)
@@ -1429,6 +1430,77 @@ class BlackHorse(QMainWindow):
             self.house_view.setPlainText("\n".join(lines))
         except Exception as e:
             self.house_view.setPlainText(f"broker error: {e}")
+
+
+    def _build_stories(self):
+        w = QWidget(); v = QVBoxLayout(w)
+        v.addWidget(QLabel("Stories — book/script workspace, one visible folder plus a prompt."))
+        row = QHBoxLayout()
+        b_refresh = QPushButton("🔄 Reload story folders")
+        b_refresh.clicked.connect(self._stories_refresh)
+        row.addWidget(b_refresh); row.addStretch(1); v.addLayout(row)
+        self.stories_list = QListWidget(); self.stories_list.currentRowChanged.connect(self._stories_show)
+        v.addWidget(self.stories_list, 1)
+        self.stories_view = QTextEdit(); self.stories_view.setReadOnly(True); self.stories_view.setFont(QFont("Monospace", 9))
+        v.addWidget(self.stories_view, 2)
+        row2 = QHBoxLayout()
+        self.stories_prompt = QLineEdit(); self.stories_prompt.returnPressed.connect(self._stories_send)
+        self.stories_prompt.setPlaceholderText("Ask for a scene, add a chapter, or open a project like the book...")
+        b_ask = QPushButton("Send to Spice"); b_ask.clicked.connect(self._stories_send)
+        row2.addWidget(self.stories_prompt,1); row2.addWidget(b_ask); v.addLayout(row2)
+        self.pages[7] = w; w.hide()
+        try: self._stories_refresh()
+        except Exception: pass
+        return w
+
+    def _stories_refresh(self):
+        import pathlib, json
+        root = pathlib.Path.home()/"blackhorse"/"logs"/"storybook"
+        root.mkdir(parents=True, exist_ok=True)
+        self.stories_list.clear()
+        for f in sorted(root.glob('*.json')):
+            try:
+                meta=json.loads(f.read_text())
+                self.stories_list.addItem(meta.get("title", f.stem))
+            except Exception:
+                self.stories_list.addItem(f.stem)
+
+    def _stories_show(self):
+        import pathlib, json
+        root = pathlib.Path.home()/"blackhorse"/"logs"/"storybook"
+        items = [x.text() for x in [self.stories_list.currentItem()] if x]
+        if not items: return
+        title=items[0]
+        for f in root.glob('*.json'):
+            try:
+                meta=json.loads(f.read_text())
+                if meta.get("title")==title:
+                    self.stories_view.setPlainText(json.dumps(meta, indent=1))
+                    return
+            except Exception: pass
+
+    def _stories_send(self):
+        text = self.stories_prompt.text().strip()
+        if not text: return
+        self.stories_prompt.clear()
+        def _work():
+            try:
+                import sys as _s
+                if str(Path.home()/"blackhorse"/"trade") not in _s.path:
+                    _s.path.insert(0, str(Path.home()/"blackhorse"/"trade"))
+                import spice
+                return f"<b>Spice:</b> {spice.handle(text)}"
+            except Exception as e:
+                return f"<b>error:</b> {e}"
+        # use a fake pending in console view? simplest append here:
+        try:
+            from PyQt6.QtCore import QTimer
+            from PyQt6.QtGui import QTextCursor
+            reply = _work()
+            self.stories_view.append(f"<b>you:</b> {text}\n{reply}")
+            self.stories_view.verticalScrollBar().setValue(self.stories_view.verticalScrollBar().maximum())
+        except Exception as e:
+            self.stories_view.append(f"<b>error:</b> {e}")
 
     def _build_skin(self):
         from PyQt6.QtWidgets import QScrollArea
