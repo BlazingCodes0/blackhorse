@@ -1406,7 +1406,8 @@ class BlackHorse(QMainWindow):
                         agents.set_capital(aid, float(le_capital.text()), allow_over=True)
                     self.refresh_agents()
                 except Exception as e:
-                    self.house_view.setPlainText(f"save error: {e}")
+                    import traceback as _tb
+                    self.house_view.setPlainText(f"save error: {e}\n\n{_tb.format_exc()}")
             b_save = QPushButton("Save to agent policy"); b_save.clicked.connect(_save_overrides)
             pv.addWidget(b_save)
             scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(page)
