@@ -1461,6 +1461,9 @@ class BlackHorse(QMainWindow):
         rowf = QHBoxLayout(); rowf.addWidget(QLabel("files/sections in dir:"))
         self.stories_files = QListWidget(); self.stories_files.setMaximumHeight(140); self.stories_files.currentRowChanged.connect(self._stories_show_file)
         rowf.addWidget(self.stories_files,1); v.addLayout(rowf)
+        rowx = QHBoxLayout()
+        b_del = QPushButton("🗑 Delete selected"); b_del.clicked.connect(self._stories_delete_selected)
+        rowx.addWidget(b_del); rowx.addStretch(1); v.addLayout(rowx)
         rownav = QHBoxLayout()
         b_prev = QPushButton("◀ prev"); b_prev.clicked.connect(self._stories_prev)
         b_next = QPushButton("next ▶"); b_next.clicked.connect(self._stories_next)
@@ -1600,6 +1603,61 @@ class BlackHorse(QMainWindow):
         row = self.stories_files.currentRow()
         if row < self.stories_files.count() - 1:
             self.stories_files.setCurrentRow(row + 1)
+
+
+    def _stories_delete_selected(self):
+        import pathlib, json, re, hashlib
+        from PyQt6.QtWidgets import QMessageBox
+        fn_item = self.stories_files.currentItem()
+        if not fn_item:
+            return
+        # ask before destruction
+        ret = QMessageBox.question(self, "Confirm delete",
+                                   f"Delete '{fn_item.text()}'?\nThis cannot be undone.",
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ret != QMessageBox.Yes:
+            return
+        title_item = self.stories_list.currentItem()
+        if not title_item:
+            help_msg = QMessageBox(); help_msg.setText("no project selected"); help_msg.exec()
+            return
+        project_title = title_item.text()
+        section_item = self.stories_sections.currentItem() if hasattr(self, 'stories_sections') else None
+        section = section_item.text() if section_item else 'notes'
+        # clean from JSON chapters if it was a chapter title
+        root = pathlib.Path.home()/"blackhorse"/"logs"/"storybook"
+        target_json = None
+        for f in root.glob('*.json'):
+            try:
+                meta=json.loads(f.read_text())
+                if meta.get('title')==project_title:
+                    target_json=f; break
+            except Exception: pass
+        if target_json and section == 'chapters':
+            try:
+                meta=json.loads(target_json.read_text())
+                meta['chapters']=[c for c in meta.get('chapters',[]) if not (c.get('title','').startswith(fn_item.text()) or c.get('text','').startswith(fn_item.text()))]
+                target_json.write_text(json.dumps(meta,indent=2))
+            except Exception: pass
+        # delete file if present
+        slug=hashlib.md5(project_title.strip().encode()).hexdigest()[:8]
+        folder = root/f"{slug}_project/{section}"
+        possible = list(folder.iterdir()) if folder.is_dir() else []
+        match=None
+        for f in possible:
+            if fn_item.text() in f.name or f.name.startswith(fn_item.text()):
+                match=f; break
+        if match and match.exists():
+            match.unlink()
+        # refresh views
+        try: self._stories_show_section()
+        except Exception: pass
+        # final safety: clear the selected item if we still have it
+        try:
+            self.stories_files.takeItem(self.stories_files.currentRow())
+        except Exception: pass
+        if self.stories_files.count()==0:
+            self.stories_view.setPlainText(f"(empty {section})")
 
     def _stories_send(self):
         text = self.stories_prompt.text().strip()
