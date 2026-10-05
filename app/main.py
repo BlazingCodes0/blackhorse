@@ -935,6 +935,9 @@ class BlackHorse(QMainWindow):
         import threading
         self.signal_status.setText("running… (~10-20s)")
         self.signal_status.setStyleSheet("color:#f59e0b")
+        class _Res: pass
+        self._sig_res = _Res(); self._sig_res.done = threading.Event(); self._sig_res.err = None
+        # signal a worker result; actual GUI updates happen on the main thread via QTimer
         def _work():
             try:
                 import sys as _s
@@ -942,11 +945,23 @@ class BlackHorse(QMainWindow):
                     _s.path.insert(0, str(Path.home()/"blackhorse"/"trade"))
                 import signalbot as _sig
                 _sig.run(pair="DOT/USD", strategy="swing")
-                self.refresh_trade()
             except Exception as e:
-                self.signal_status.setText(f"error: {e}")
-                self.signal_status.setStyleSheet("color:#ef4444")
+                self._sig_res.err = str(e)
+            finally:
+                self._sig_res.done.set()
         threading.Thread(target=_work, daemon=True).start()
+        def _wait():
+            if self._sig_res.done.is_set():
+                if self._sig_res.err:
+                    self.signal_status.setText(f"error: {self._sig_res.err}")
+                    self.signal_status.setStyleSheet("color:#ef4444")
+                else:
+                    self.signal_status.setText("ok")
+                    self.signal_status.setStyleSheet("color:#22c55e")
+                    self.refresh_trade()
+                return
+            QTimer.singleShot(1000, _wait)
+        QTimer.singleShot(1000, _wait)
 
     def ask_brain_now(self):
         import threading
