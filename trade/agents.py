@@ -157,7 +157,7 @@ def _available_capital() -> float:
 
 
 def create_agent(kind: str, profile: str, name: str = None, capital: float = 0,
-                 allow_over: bool = False) -> dict:
+                 allow_over: bool = False, mode: str = "LIVE") -> dict:
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}")
     if kind == "trading" and profile not in PROFILES:
@@ -181,6 +181,7 @@ def create_agent(kind: str, profile: str, name: str = None, capital: float = 0,
         "profile": profile if kind == "trading" else None,
         "enabled": False,
         "capital": float(capital),
+        "mode": mode,
         "policy_overrides": {},
         "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }

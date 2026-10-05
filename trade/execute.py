@@ -123,7 +123,7 @@ def autonomous() -> bool:
 
 def execute(plan: dict, pair: str = None, mode: str = None) -> dict:
     import heart, portfolio, treasury
-    mode = mode or _mode()
+    mode = mode or plan.get("mode") or _mode()
     if plan.get("action") not in ("BUY", "SELL"):
         return {"ok": False, "skipped": True, "reason": f"action {plan.get('action')} not executable"}
 

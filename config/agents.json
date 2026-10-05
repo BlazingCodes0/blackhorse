@@ -12,7 +12,8 @@
         "exit_strength_min": 0.7,
         "require_tide_context": false
       },
-      "created": "2026-10-04T15:53:25Z"
+      "created": "2026-10-04T15:53:25Z",
+      "mode": "LIVE"
     },
     "agent_2": {
       "id": "agent_2",
@@ -26,7 +27,8 @@
         "exit_strength_min": 0.7,
         "require_tide_context": false
       },
-      "created": "2026-10-04T16:07:24Z"
+      "created": "2026-10-04T16:07:24Z",
+      "mode": "LIVE"
     },
     "agent_4": {
       "id": "agent_4",
@@ -36,7 +38,8 @@
       "enabled": true,
       "capital": 10.0,
       "policy_overrides": {},
-      "created": "2026-10-05T06:33:22Z"
+      "created": "2026-10-05T06:33:22Z",
+      "mode": "LIVE"
     }
   },
   "next_id": 5
