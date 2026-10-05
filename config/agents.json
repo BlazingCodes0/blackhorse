@@ -27,7 +27,17 @@
         "require_tide_context": false
       },
       "created": "2026-10-04T16:07:24Z"
+    },
+    "agent_4": {
+      "id": "agent_4",
+      "name": "Scalper",
+      "kind": "trading",
+      "profile": "quick",
+      "enabled": true,
+      "capital": 10.0,
+      "policy_overrides": {},
+      "created": "2026-10-05T06:33:22Z"
     }
   },
-  "next_id": 4
+  "next_id": 5
 }
