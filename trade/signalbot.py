@@ -26,7 +26,7 @@ def _node() -> str:
     return shutil.which("node") or "node"
 
 
-def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180) -> dict:
+def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180, channels=None) -> dict:
     if exchange is None:
         try:
             import exchanges
@@ -35,6 +35,8 @@ def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180) -> dict:
             exchange = "kraken"
     cmd = [_node(), str(SIDECAR), "--pair", pair, "--strategy", strategy,
            "--exchange", exchange, "--out", str(RAW_OUT)]
+    if channels:
+        cmd += ["--channels", ",".join(channels)]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                            cwd=str(BH))
