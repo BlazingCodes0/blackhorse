@@ -33,7 +33,7 @@
     "max_order_quote": 200.0
   },
   "deadman": {
-    "heartbeat_max_age_seconds": 90,
+    "heartbeat_max_age_seconds": 600,
     "on_miss": "PARK"
   },
   "graded_levels": {
