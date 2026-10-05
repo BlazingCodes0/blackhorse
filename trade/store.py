@@ -102,6 +102,11 @@ CREATE INDEX IF NOT EXISTS idx_dec_ts ON decisions(ts);
 def init() -> dict:
     con = connect()
     con.executescript(SCHEMA)
+    for col in ("interval", "edge_cell"):
+        try:
+            con.execute(f"ALTER TABLE positions ADD COLUMN {col} TEXT")
+        except Exception:
+            pass
     con.commit()
     return {"db": str(DB), "ok": True}
 
@@ -175,12 +180,12 @@ def _order_row(con, oid):
 # ---- positions --------------------------------------------------------------
 
 def open_position(pos_id, agent, pair, side, entry, qty, stop=None, target=None,
-                  mode="PAPER", reason=None) -> dict:
+                  mode="PAPER", reason=None, interval=None, edge_cell=None) -> dict:
     init()
     con = connect()
     con.execute("INSERT OR REPLACE INTO positions(id, opened, agent, pair, side, entry, qty, "
-                "stop, target, status) VALUES(?,?,?,?,?,?,?,?,?, 'OPEN')",
-                (pos_id, _now(), agent, pair, side, entry, qty, stop, target))
+                "stop, target, status, interval, edge_cell) VALUES(?,?,?,?,?,?,?,?,?,'OPEN',?,?)",
+                (pos_id, _now(), agent, pair, side, entry, qty, stop, target, interval, edge_cell))
     con.commit()
     return True
 

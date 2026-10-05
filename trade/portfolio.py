@@ -56,12 +56,13 @@ def status() -> dict:
 
 def open_position(agent: str, pair: str, side: str, entry: float, qty: float,
                   stop: float = None, target: float = None, fee_pct: float = 0.26,
-                  venue: str = None, note: str = None, mode: str = "PAPER") -> dict:
+                  venue: str = None, note: str = None, mode: str = "PAPER", interval=None, edge_cell=None) -> dict:
     d = _load()
     fee = entry * qty * (fee_pct / 100)
     pos = {"id": f"pos_{int(time.time()*1000)}", "agent": agent, "pair": pair, "side": side,
            "entry": entry, "qty": qty, "stop": stop, "target": target, "mode": mode,
-           "fee_entry": fee, "opened": time.time(), "venue": venue, "note": note, "mark": entry}
+           "fee_entry": fee, "opened": time.time(), "venue": venue, "note": note, "mark": entry,
+           "interval": interval, "edge_cell": edge_cell}
     d["positions"].append(pos)
     d["fees_paid"] += fee
     _save(d)
