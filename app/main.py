@@ -330,6 +330,20 @@ class BlackHorse(QMainWindow):
         brow.addWidget(b_sweep); brow.addWidget(b_silence)
         v.addLayout(brow)
 
+        # periodic edge_rules study toggle
+        from PyQt6.QtWidgets import QCheckBox, QSpinBox
+        self.cb_edge_rules = QCheckBox("Run edge_rules study periodically")
+        self.edge_rules_cfg = json.loads((Path.home()/"blackhorse"/"config"/"edge_rules.json").read_text()) if (Path.home()/"blackhorse"/"config"/"edge_rules.json").exists() else {"enabled": True, "every_minutes": 60}
+        self.cb_edge_rules.setChecked(self.edge_rules_cfg.get("enabled", True))
+        self.cb_edge_rules.stateChanged.connect(self._on_edge_rules_toggle)
+        v.addWidget(self.cb_edge_rules)
+        row2 = QHBoxLayout(); row2.addWidget(QLabel("every (min)"))
+        self.sb_edge_minutes = QSpinBox(); self.sb_edge_minutes.setRange(5, 1440); self.sb_edge_minutes.setValue(int(self.edge_rules_cfg.get("every_minutes", 60)))
+        self.sb_edge_minutes.valueChanged.connect(self._on_edge_minutes_changed)
+        row2.addWidget(self.sb_edge_minutes); row2.addStretch(1); v.addLayout(row2)
+        self.edge_rules_timer = QTimer(self); self.edge_rules_timer.timeout.connect(self.run_edge_rules_update); self.edge_rules_timer.start(1000)  # tick 1s, each tick check last_ts
+        self._last_edge_rules_run = 0
+
         self.brain_view = QTextEdit(); self.brain_view.setReadOnly(True)
         self.brain_view.setFont(QFont("Monospace", 9))
         self.brain_view.setUndoRedoEnabled(False)
@@ -394,6 +408,34 @@ class BlackHorse(QMainWindow):
             self._brain_reply = (r.stdout.strip() or r.stderr.strip()[:200] or "(no reply)")
         threading.Thread(target=_run, daemon=True).start()
         QTimer.singleShot(400, self._brain_poll_reply)
+
+
+    def _on_edge_rules_toggle(self, _state):
+        cfg = getattr(self, "edge_rules_cfg", {})
+        cfg["enabled"] = bool(self.cb_edge_rules.isChecked())
+        (Path.home()/"blackhorse"/"config"/"edge_rules.json").write_text(json.dumps(cfg, indent=2))
+
+    def _on_edge_minutes_changed(self, val):
+        cfg = getattr(self, "edge_rules_cfg", {})
+        cfg["every_minutes"] = int(val)
+        (Path.home()/"blackhorse"/"config"/"edge_rules.json").write_text(json.dumps(cfg, indent=2))
+
+    def run_edge_rules_update(self):
+        import subprocess as _sp, time as _t, json as _j
+        cfg = getattr(self, "edge_rules_cfg", {})
+        if not cfg.get("enabled", True):
+            return
+        now = _t.time()
+        minutes = int(cfg.get("every_minutes", 60))
+        last = getattr(self, "_last_edge_rules_run", 0)
+        if now - last < minutes * 60:
+            return
+        self._last_edge_rules_run = now
+        def _work():
+            r = _sp.run([sys.executable, str(Path.home()/"blackhorse"/"trade"/"edge_rules_update.py")],
+                        capture_output=True, text=True, timeout=180)
+            (Path.home()/"blackhorse"/"logs"/"edge_rules_run.log").write_text((r.stdout or "") + "\n=== STDERR ===\n" + (r.stderr or ""))
+        threading.Thread(target=_work, daemon=True).start()
 
     def _brain_poll_reply(self):
         reply = getattr(self, "_brain_reply", None)
