@@ -143,7 +143,7 @@ def decide_all(verdict=None, pair=None) -> dict:
         holding = _held_by_agent(a["id"])
         d = decider.decide(verdict=verdict, treasury=tre, cfg=agents.policy_for(a["id"]),
                            holding=holding, pair=pair)
-        reports.append({"agent": a["id"], "name": a.get("name"), "profile": a.get("profile"),
+        reports.append({"agent": a["id"], "name": a.get("name"), "profile": a.get("profile"), "mode": a.get("mode"),
                         "decision": d, "spendable": avail, "holding": holding})
         if d.get("action") in ("BUY","SELL"):
             try:
@@ -151,7 +151,7 @@ def decide_all(verdict=None, pair=None) -> dict:
                 hv = heart.check(action=d["action"], quote=d.get("size_quote",0) or 0,
                                  venue=_active_venue())
                 if hv["decision"] == "ALLOW":
-                    approved.append({"agent": a["id"], "name": a.get("name"), "profile": a.get("profile"),
+                    approved.append({"agent": a["id"], "name": a.get("name"), "profile": a.get("profile"),"mode": a.get("mode"),
                                      "action": d["action"], "channel": d.get("channel"), "entry": d.get("entry"),
                                      "stop": d.get("stop"), "target": d.get("target"), "size_quote": d.get("size_quote"),
                                      "risk_quote": d.get("risk_quote"), "rr": d.get("rr"), "score": d.get("score"),
