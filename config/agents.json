@@ -27,7 +27,17 @@
         "require_tide_context": false
       },
       "created": "2026-10-04T16:07:24Z"
+    },
+    "agent_3": {
+      "id": "agent_3",
+      "name": "Scout",
+      "kind": "trading",
+      "profile": "scout",
+      "enabled": true,
+      "capital": 20.0,
+      "policy_overrides": {},
+      "created": "2026-10-05T05:47:42Z"
     }
   },
-  "next_id": 3
+  "next_id": 4
 }
