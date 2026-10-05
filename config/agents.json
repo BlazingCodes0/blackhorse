@@ -13,7 +13,11 @@
         "require_tide_context": false
       },
       "created": "2026-10-04T15:53:25Z",
-      "mode": "LIVE"
+      "mode": "LIVE",
+      "pairs": [
+        "BTC/USD",
+        "ETH/USD"
+      ]
     },
     "agent_2": {
       "id": "agent_2",
