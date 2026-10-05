@@ -612,6 +612,73 @@ def storybook(action, project="default", character=None, detail=None, chapter=No
     elif action == "show_project":
         fp.write_text(json.dumps(data, indent=2))
         return json.dumps({"title": data["title"], "chapters": data["chapters"][:5], "characters": {k:v[:5] for k,v in data["characters"].items()}}, indent=1)[:1900]
+    elif action == "move_chapter":
+        # move by exact or startswith title to a directory under the project folder
+        if not chapter or not text:
+            return "(error: need chapter title and target folder name)"
+        proj_dir = root/f"{slug}_project"
+        matched = None
+        for i,ch in enumerate(data.get('chapters',[])):
+            if ch.get('title','').startswith(chapter) or ch.get('text','').startswith(chapter):
+                matched = i; break
+        if matched is None:
+            return "(error: chapter not found)"
+        ch = data['chapters'].pop(matched)
+        folder = proj_dir/(text or 'notes')
+        folder.mkdir(parents=True, exist_ok=True)
+        import re as _re
+        import shutil as _sh
+        safe = _re.sub(r'[^a-zA-Z0-9]+','_',ch.get('title','')).strip('_').lower()[:37]
+        (folder / f"{safe}.md").write_text(ch.get('text',''))
+        fp.write_text(json.dumps(data, indent=2))
+        return f"moved chapter '{ch.get('title','')}' -> {text}/{safe}.md"
+    elif action == "delete_chapter":
+        if not chapter:
+            return "(error: need chapter title)"
+        for i,ch in enumerate(data.get('chapters',[])):
+            if ch.get('title','').startswith(chapter) or ch.get('text','').startswith(chapter):
+                data['chapters'].pop(i)
+                fp.write_text(json.dumps(data, indent=2))
+                return f"deleted chapter '{ch.get('title','')}'"
+        return "(error: chapter not found)"
+    elif action == "move_file":
+        # move a raw file from one project subfolder to another
+        if not chapter or not text:
+            return "(error: need current section name and target section name like 'scenes->notes')"
+        parts = [p.strip() for p in text.split('->')]
+        if len(parts)!=2:
+            return "(error: target must look like 'ideas->notes')"
+        src = root/f"{slug}_project/{parts[0]}"
+        dst = root/f"{slug}_project/{parts[1]}"
+        if not src.exists():
+            return "(error: source folder not found)"
+        dst.mkdir(parents=True, exist_ok=True)
+        import shutil as _sh
+        matched = None
+        for f in src.iterdir():
+            if f.name.startswith(chapter) or chapter in f.name:
+                matched = f; break
+        if matched is None:
+            return "(error: file not found in source)"
+        _sh.move(str(matched), str(dst/matched.name))
+        return f"moved file {matched.name} -> {parts[1]}/"
+    elif action == "delete_file":
+        if not chapter or not text:
+            return "(error: need section and keyword/filename fragment)"
+        parts=[p.strip() for p in text.split(':')]
+        if len(parts)!=2:
+            return "(error: use section:filename)"
+        src = root/f"{slug}_project/{parts[0]}"
+        if not src.exists():
+            return "(error: section not found)"
+        matched = None
+        for f in src.iterdir():
+            if parts[1] in f.name:
+                matched = f; break
+        if matched is None:
+            return "(error: file not found)"
+        matched.unlink()
+        return f"deleted file {matched.name} in {parts[0]}/"
     else:
         return "(error: unknown action)"
     fp.write_text(json.dumps(data, indent=2))
