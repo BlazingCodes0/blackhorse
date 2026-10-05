@@ -1,0 +1,10 @@
+{
+  "comment": "Only trading agents are queried by broker. decide(); non-trading agents keep their own channel.",
+  "conflict_margin": null,
+  "weights": {
+    "comment": "Held constant for determinism; evidence ADDS points, holdings do NOT subtract.",
+    "higher_timeframe_is_evidence": true,
+    "history_is_evidence": true
+  },
+  "adjudication": false
+}

@@ -1,0 +1,21 @@
+{
+  "master_enabled": true,
+  "llm_enabled": false,
+  "max_llm_calls_per_min": 6,
+  "llm_timeout_seconds": 13,
+  "llm_model": "qwen2.5:0.5b",
+  "llm_keep_alive_seconds": 0,
+  "brain_enabled": true,
+  "whitecells_may_escalate": true,
+  "brain_min_seconds_between_calls": 300,
+  "brain_max_calls_per_hour": 10,
+  "brain_sweep_seconds": 300,
+  "brain_timeout_seconds": 180,
+  "engines": {
+    "net_check": true,
+    "watchdog": true,
+    "egress": true,
+    "integrity": true
+  },
+  "brain_retry_seconds": 20
+}

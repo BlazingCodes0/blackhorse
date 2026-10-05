@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+logs/
+config/LOCKDOWN
+config/blocked_ips.txt
+docs/*.png
+
+# BlackHorse secret vault — never commit
+config/exchange_keys.json
+config/.master_key
+trade/**/__pycache__/
+
+# runtime memory + data (disk-first, not code)
+memory/brain.db
+memory/brain.db-wal
+memory/brain.db-shm
+memory/raw/
+logs/*.jsonl
+logs/*.json
+memory/*.db*
+
+# trading database (runtime, disk-first, not code)
+logs/trading.db
+logs/trading.db-wal
+logs/trading.db-shm

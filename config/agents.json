@@ -1,0 +1,25 @@
+{
+  "agents": {
+    "agent_1": {
+      "id": "agent_1",
+      "name": "Lifecycle",
+      "kind": "trading",
+      "profile": "lifecycle",
+      "enabled": true,
+      "capital": 39.0,
+      "policy_overrides": {},
+      "created": "2026-10-04T15:53:25Z"
+    },
+    "agent_2": {
+      "id": "agent_2",
+      "name": "LiveTest30",
+      "kind": "trading",
+      "profile": "lifecycle",
+      "enabled": true,
+      "capital": 30.0,
+      "policy_overrides": {},
+      "created": "2026-10-04T16:07:24Z"
+    }
+  },
+  "next_id": 3
+}

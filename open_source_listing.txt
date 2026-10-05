@@ -1,0 +1,46 @@
+Open-Source Building Blocks for Multi-Agent Money Systems
+========================================================
+
+## Multi-agent frameworks (coordinating multiple AIs)
+- CrewAI – role-based agents (researcher, writer, coder) that collaborate on tasks
+- LangGraph – build stateful, multi-step AI workflows as graphs
+- AutoGen (AG2) – Microsoft's framework for agents conversing with each other
+- MetaGPT / ChatDev – simulated dev teams; useful pattern for specialist agents
+- OpenAI Agents SDK – lightweight, open-source agent orchestration
+- smolagents (Hugging Face) – minimal, code-first agents
+- Agno / Pydantic AI – fast, Pythonic agent libraries
+- MetaGPT, CAMEL, SuperAGI – older but proven agent-team frameworks
+
+## Workflow automation (glue between systems)
+- n8n – self-hostable workflow automation (email, APIs, AI nodes, scheduled jobs)
+- Activepieces / Windmill / Flowise / Langflow – n8n alternatives, some AI-focused
+- Dify – build/host AI apps with workflows and RAG
+
+## Research & information gathering
+- GPT-Researcher – autonomous web research agent
+- ScrapeGraphAI / Crawl4AI / Firecrawl – AI-powered scraping
+- browser-use – AI that browses the web like a human
+- Open WebUI / Khoj – knowledge chat interfaces
+
+## Coding agents (building/maintaining your systems)
+- OpenHands (formerly OpenDevin) – autonomous software engineer agent
+- Aider – AI pair programmer in terminal
+- Cline / Continue.dev – editor-integrated coding agents
+
+## Trading / finance (legally "real money" bots)
+- Freqtrade – crypto trading bot, huge community, backtesting included
+- Hummingbot – market-making / arbitrage crypto bot
+- Jesse / Backtrader – trading strategy frameworks
+- QuantConnect (Lean engine) – algorithmic trading engine
+
+## Local models & infra (no API costs)
+- Ollama / llama.cpp / vLLM / LocalAI – run LLMs yourself
+- Open Interpreter – LLM that executes code locally
+- Langfuse / Phoenix – observability for your agents
+
+## Protocol-level
+- MCP (Model Context Protocol) – Anthropic's open standard so agents share tools/data
+
+Key pattern: n8n orchestrates -> GPT-Researcher gathers info -> LLM agent writes
+content -> browser-use posts/publishes -> Freqtrade handles trading -> Langfuse
+monitors everything.

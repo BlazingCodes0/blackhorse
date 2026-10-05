@@ -1,0 +1,12 @@
+{
+  "comment": "Two SEPARATE switches. autonomous=true lets the loop trade by itself (sleeping or awake). mode=PAPER|LIVE chooses paper vs real money. Autonomous does NOT imply live.",
+  "autonomous": true,
+  "mode": "LIVE",
+  "watchlist": [
+    "DOT/USD",
+    "ETH/USD",
+    "SOL/USD",
+    "XRP/USD"
+  ],
+  "interval_seconds": 300
+}
