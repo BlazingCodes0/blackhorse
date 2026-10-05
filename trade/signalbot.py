@@ -26,7 +26,7 @@ def _node() -> str:
     return shutil.which("node") or "node"
 
 
-def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180, channels=None) -> dict:
+def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180, channels=None, merge_daytrade=False) -> dict:
     if exchange is None:
         try:
             import exchanges
@@ -51,6 +51,23 @@ def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180, channels=N
 
     raw = json.loads(RAW_OUT.read_text())
     snap = normalize(raw, meta)
+    if merge_daytrade:
+        # separate sidecar run for an extra dayTrade lane, so trading can see 15m
+        try:
+            cmd2 = [_node(), str(SIDECAR), "--pair", pair, "--strategy", "dayTrade",
+                    "--exchange", exchange, "--out", str(RAW_OUT)]
+            r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=timeout, cwd=str(BH))
+            meta2 = json.loads(r2.stdout.strip().splitlines()[-1]) if r2.stdout.strip() else {}
+            if meta2.get("ok"):
+                raw2 = json.loads(RAW_OUT.read_text())
+                snap2 = normalize(raw2, meta2)
+                for ch, label in (("wave","wave15"), ("ripple","ripple5"), ("tide","tide60")):
+                    if ch in snap2.get("channels", {}):
+                        snap["channels"][label] = dict(snap2["channels"][ch])
+                        snap["channels"][label]["role"] = f"{snap2['channels'][ch].get('role','mid') or 'mid'}/dayTrade"
+                snap["dayTrade_ts"] = snap2.get("ts")
+        except Exception:
+            pass
     LATEST.parent.mkdir(parents=True, exist_ok=True)
     LATEST.write_text(json.dumps(snap, indent=2))
     return snap

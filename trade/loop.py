@@ -62,7 +62,7 @@ def cycle(refresh_signal=True, ask_brain=True, pair="DOT/USD", cfg=None) -> dict
     if refresh_signal and _signal_age() > cfg.get("signal_max_age", 600):
         try:
             import signalbot
-            sig = signalbot.run(pair=pair)
+            sig = signalbot.run(pair=pair, merge_daytrade=True)
             rec["signal_refresh"] = "ok" if sig.get("available") else sig.get("error")
         except Exception as e:
             rec["signal_refresh"] = f"error: {e}"
