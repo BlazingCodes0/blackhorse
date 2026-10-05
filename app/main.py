@@ -1380,8 +1380,10 @@ class BlackHorse(QMainWindow):
             le_stop = _edit('stop%<=', pol.get('stop_max_pct',''))
             le_risk = _edit('risk%=', pol.get('risk_per_trade_pct',''))
             le_maxpos = _edit('maxpos%=', pol.get('max_position_pct',''))
+            le_pairs = _edit('pairs', ','.join(a.get('pairs') or []))
+            le_capital = _edit('capital', str(a.get('capital', 0)))
             pv.addLayout(grid)
-            def _save_overrides(aid=a['id'], le_channels=le_channels, le_entry=le_entry, le_exit=le_exit, le_rr=le_rr, le_stop=le_stop, le_risk=le_risk, le_maxpos=le_maxpos):
+            def _save_overrides(aid=a['id'], le_channels=le_channels, le_entry=le_entry, le_exit=le_exit, le_rr=le_rr, le_stop=le_stop, le_risk=le_risk, le_maxpos=le_maxpos, le_pairs=le_pairs, le_capital=le_capital):
                 try:
                     agents, _ = self._agents_mod()
                     if le_channels.text().strip():
@@ -1398,6 +1400,10 @@ class BlackHorse(QMainWindow):
                         agents.set_override(aid, 'risk_per_trade_pct', float(le_risk.text()))
                     if le_maxpos.text().strip():
                         agents.set_override(aid, 'max_position_pct', float(le_maxpos.text()))
+                    if le_pairs.text().strip():
+                        agents.set_pairs(aid, [x.strip().upper() for x in le_pairs.text().split(',') if x.strip()])
+                    if le_capital.text().strip():
+                        agents.set_capital(aid, float(le_capital.text()), allow_over=True)
                     self.refresh_agents()
                 except Exception as e:
                     self.house_view.setPlainText(f"save error: {e}")
