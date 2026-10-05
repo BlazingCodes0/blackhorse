@@ -1441,6 +1441,8 @@ class BlackHorse(QMainWindow):
         row.addWidget(b_refresh); row.addStretch(1); v.addLayout(row)
         self.stories_list = QListWidget(); self.stories_list.currentRowChanged.connect(self._stories_show)
         v.addWidget(self.stories_list, 1)
+        self.stories_sections = QListWidget(); self.stories_sections.setMaximumHeight(90); self.stories_sections.currentRowChanged.connect(self._stories_show_section)
+        v.addWidget(self.stories_sections)
         self.stories_view = QTextEdit(); self.stories_view.setReadOnly(True); self.stories_view.setFont(QFont("Monospace", 9))
         v.addWidget(QLabel("— project details —")); v.addWidget(self.stories_view, 2)
         self.stories_chat = QTextEdit(); self.stories_chat.setReadOnly(True); self.stories_chat.setFont(QFont("Monospace", 9))
@@ -1489,11 +1491,63 @@ class BlackHorse(QMainWindow):
                         lines.append(f"CHARACTER {ch[0]}:")
                         for v in vals[:6]:
                             lines.append(f" - {v.get('detail','')}")
+                    # fill section list (ideas/scenes/etc.) and remember selected view
+                    self.stories_sections.clear()
+                    for name in ("chapters", "characters", "ideas", "scenes", "notes"):
+                        self.stories_sections.addItem(name)
+                    self._stories_meta = meta
                     self.stories_view.setPlainText("\n\n".join(lines))
                     thread = meta.get("thread") or []
                     self.stories_chat.setPlainText("\n\n".join(f"YOU: {t.get('q') or ''}\nSPICE: {t.get('a') or ''}" for t in thread) or "(no remembered conversation yet)")
                     return
             except Exception: pass
+
+    def _stories_show_section(self, _row=None):
+        import pathlib, json
+        items = [x.text() for x in [self.stories_sections.currentItem()] if x]
+        if not items: return
+        section = items[0]
+        meta = getattr(self, "_stories_meta", None)
+        if meta is None:
+            root = pathlib.Path.home()/"blackhorse"/"logs"/"storybook"
+            title_item = self.stories_list.currentItem()
+            if not title_item: return
+            for f in root.glob('*.json'):
+                try:
+                    m=json.loads(f.read_text())
+                    if m.get('title')==title_item.text(): meta=m; break
+                except Exception: pass
+        if meta is None: return
+        if section == "chapters":
+            lines=[]
+            for ch in meta.get("chapters", []):
+                lines.append(f"CHAPTER — {ch.get('title','untitled')}\n{(ch.get('text') or '')[:3000]}\n")
+            self.stories_view.setPlainText("\n\n".join(lines) or "(no chapters yet)")
+        elif section == "characters":
+            lines=[]
+            for name, vals in meta.get("characters", {}).items():
+                lines.append(f"CHARACTER: {name}")
+                for v in (vals or [])[:20]:
+                    lines.append(f"  - {v.get('detail','')}")
+            self.stories_view.setPlainText("\n".join(lines) or "(no characters yet)")
+        else:
+            # try to show files in the matching subfolder
+            proj_dir = pathlib.Path.home()/"blackhorse"/"logs"/"storybook"
+            # find slug dir by matching glob on title? fallback: list dir by file exists
+            import hashlib
+            slug = hashlib.md5((meta.get('title','default').strip().encode())).hexdigest()[:8]
+            path = proj_dir.joinpath(f"{slug}_project/{section}")
+            if path.is_dir():
+                files = [f.name for f in path.iterdir() if f.is_file()]
+                self.stories_view.setPlainText(f"{section}\n" + ("\n".join(files) or "(empty)"))
+            else:
+                # try generic sibling names
+                for p in proj_dir.glob(f"*/**/{section}"):
+                    if p.is_dir():
+                        files=[f.name for f in p.iterdir() if f.is_file()]
+                        self.stories_view.setPlainText(f"{section}\n" + ("\n".join(files) or "(empty)"))
+                        return
+                self.stories_view.setPlainText(f"(no folder for {section} yet — create it via storybook)")
 
     def _stories_send(self):
         text = self.stories_prompt.text().strip()
