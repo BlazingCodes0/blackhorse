@@ -1509,19 +1509,33 @@ class BlackHorse(QMainWindow):
                             meta.setdefault('thread',[]).append({"q": text, "a": "", "ts": _t.strftime('%Y-%m-%dT%H:%M:%SZ', _t.gmtime())})
                             f.write_text(_json.dumps(meta, indent=2)); break
                     except Exception: pass
-            reply = _work()
-            current=[x.text() for x in [self.stories_list.currentItem()] if x]
-            if current:
-                root = _pb.Path.home()/"blackhorse"/"logs"/"storybook"
-                for f in root.glob('*.json'):
-                    try:
-                        meta=_json.loads(f.read_text())
-                        if meta.get('title')==current[0]:
-                            if meta.get('thread'): meta['thread'][-1]['a']=reply
-                            f.write_text(_json.dumps(meta, indent=2)); break
-                    except Exception: pass
-            self._stories_show()
+            # don't block the GUI: call Spice on a worker thread and reveal when done
+            reply_holder=[]
+            self.stories_chat.append(f"<b>you:</b> {text}\n<i>Spice: thinking…</i>")
             self.stories_chat.verticalScrollBar().setValue(self.stories_chat.verticalScrollBar().maximum())
+            def _run():
+                reply_holder.append(_work())
+            import threading
+            threading.Thread(target=_run, daemon=True).start()
+            def _reap():
+                if reply_holder:
+                    try: self.stories_chat.verticalScrollBar().setValue(self.stories_chat.verticalScrollBar().maximum())
+                    except Exception: pass
+                    reply = reply_holder[0]
+                    current=[x.text() for x in [self.stories_list.currentItem()] if x]
+                    if current:
+                        root = _pb.Path.home()/"blackhorse"/"logs"/"storybook"
+                        for f in root.glob('*.json'):
+                            try:
+                                meta=_json.loads(f.read_text())
+                                if meta.get('title')==current[0]:
+                                    if meta.get('thread'): meta['thread'][-1]['a']=reply
+                                    f.write_text(_json.dumps(meta, indent=2)); break
+                            except Exception: pass
+                    self._stories_show()
+                    return
+                QTimer.singleShot(700, _reap)
+            _reap()
         except Exception as e:
             self.stories_chat.append(f"<b>error:</b> {e}")
 
