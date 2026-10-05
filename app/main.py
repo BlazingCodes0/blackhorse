@@ -1443,6 +1443,13 @@ class BlackHorse(QMainWindow):
         v.addWidget(self.stories_list, 1)
         self.stories_sections = QListWidget(); self.stories_sections.setMaximumHeight(90); self.stories_sections.currentRowChanged.connect(self._stories_show_section)
         v.addWidget(self.stories_sections)
+        rowf = QHBoxLayout(); rowf.addWidget(QLabel("files/sections in dir:"))
+        self.stories_files = QListWidget(); self.stories_files.setMaximumHeight(140); self.stories_files.currentRowChanged.connect(self._stories_show_file)
+        rowf.addWidget(self.stories_files,1); v.addLayout(rowf)
+        rownav = QHBoxLayout()
+        b_prev = QPushButton("◀ prev"); b_prev.clicked.connect(self._stories_prev)
+        b_next = QPushButton("next ▶"); b_next.clicked.connect(self._stories_next)
+        rownav.addWidget(b_prev); rownav.addWidget(b_next); rownav.addStretch(1); v.addLayout(rownav)
         self.stories_view = QTextEdit(); self.stories_view.setReadOnly(True); self.stories_view.setFont(QFont("Monospace", 9))
         v.addWidget(QLabel("— project details —")); v.addWidget(self.stories_view, 2)
         self.stories_chat = QTextEdit(); self.stories_chat.setReadOnly(True); self.stories_chat.setFont(QFont("Monospace", 9))
@@ -1518,36 +1525,66 @@ class BlackHorse(QMainWindow):
                     if m.get('title')==title_item.text(): meta=m; break
                 except Exception: pass
         if meta is None: return
+        self.stories_files.clear()
         if section == "chapters":
-            lines=[]
-            for ch in meta.get("chapters", []):
-                lines.append(f"CHAPTER — {ch.get('title','untitled')}\n{(ch.get('text') or '')[:3000]}\n")
-            self.stories_view.setPlainText("\n\n".join(lines) or "(no chapters yet)")
+            self.stories_files.addItems([ch.get("title", "untitled") for ch in meta.get("chapters", [])] or ["(no chapters yet)"])
+            self.stories_view.setPlainText("(select a chapter in the files list above)")
         elif section == "characters":
-            lines=[]
-            for name, vals in meta.get("characters", {}).items():
-                lines.append(f"CHARACTER: {name}")
-                for v in (vals or [])[:20]:
-                    lines.append(f"  - {v.get('detail','')}")
-            self.stories_view.setPlainText("\n".join(lines) or "(no characters yet)")
+            self.stories_files.addItems([name for name in meta.get("characters", {}).keys()] or ["(no characters yet)"])
+            self.stories_view.setPlainText("(select a character name above)")
         else:
-            # try to show files in the matching subfolder
-            proj_dir = pathlib.Path.home()/"blackhorse"/"logs"/"storybook"
-            # find slug dir by matching glob on title? fallback: list dir by file exists
             import hashlib
             slug = hashlib.md5((meta.get('title','default').strip().encode())).hexdigest()[:8]
-            path = proj_dir.joinpath(f"{slug}_project/{section}")
+            path = pathlib.Path.home()/"blackhorse"/"logs"/"storybook"/f"{slug}_project/{section}"
             if path.is_dir():
-                files = [f.name for f in path.iterdir() if f.is_file()]
-                self.stories_view.setPlainText(f"{section}\n" + ("\n".join(files) or "(empty)"))
+                files = sorted([f.name for f in path.iterdir() if f.is_file()])
             else:
-                # try generic sibling names
-                for p in proj_dir.glob(f"*/**/{section}"):
-                    if p.is_dir():
-                        files=[f.name for f in p.iterdir() if f.is_file()]
-                        self.stories_view.setPlainText(f"{section}\n" + ("\n".join(files) or "(empty)"))
-                        return
-                self.stories_view.setPlainText(f"(no folder for {section} yet — create it via storybook)")
+                files = []
+            self.stories_files.addItems(files or ["(empty)"])
+            self.stories_view.setPlainText(f"{section} — click a file name above to read it")
+
+
+    def _stories_show_file(self, _row=None):
+        import pathlib, json
+        texts = [self.stories_files.item(i).text() for i in range(self.stories_files.count())]
+        item = self.stories_files.currentItem()
+        if not item: return
+        name = item.text()
+        section = (self.stories_sections.currentItem().text() if self.stories_sections.currentItem() else None) or ""
+        root = pathlib.Path.home()/"blackhorse"/"logs"/"storybook"
+        meta = getattr(self, '_stories_meta', None)
+        if meta is None: return
+        if section == "chapters":
+            for ch in meta.get("chapters", []):
+                if ch.get("title", "untitled") == name:
+                    self.stories_view.setPlainText(ch.get("text","") or "(empty chapter)")
+                    return
+            self.stories_view.setPlainText("(chapter not found)")
+        elif section == "characters":
+            vals = meta.get("characters", {}).get(name, [])
+            lines=[]
+            for v in (vals or []):
+                lines.append(f"- {v.get('detail','')}")
+            self.stories_view.setPlainText("\n".join(lines) or "(no detail)")
+        else:
+            import hashlib
+            slug = hashlib.md5((meta.get('title','default').strip().encode())).hexdigest()[:8]
+            path = root.joinpath(f"{slug}_project/{section}")
+            fpath = path / name
+            if fpath.exists():
+                self.stories_view.setPlainText(fpath.read_text(errors='ignore'))
+            else:
+                self.stories_view.setPlainText("(file not found)")
+
+    def _stories_prev(self):
+        row = self.stories_files.currentRow()
+        if row > 0:
+            self.stories_files.setCurrentRow(row - 1)
+
+    def _stories_next(self):
+        row = self.stories_files.currentRow()
+        if row < self.stories_files.count() - 1:
+            self.stories_files.setCurrentRow(row + 1)
 
     def _stories_send(self):
         text = self.stories_prompt.text().strip()
