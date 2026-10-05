@@ -134,6 +134,12 @@ def decide_all(verdict=None, pair=None) -> dict:
     reports = []
     approved = []
     for a in enabled:
+        if pair and a.get('pairs') and pair not in a['pairs']:
+            reports.append({"agent": a["id"], "name": a.get("name"), "profile": a.get("profile"),
+                            "mode": a.get("mode"), "skipped": True, "reason": f"pair {pair} not in {a.get('pairs')}",
+                            "decision": {"action":"SKIP","reason":"not assigned to thispair"},
+                            "spendable": 0.0, "holding": 0.0})
+            continue
         try:
             import capital
             avail = capital.agent_available(a["id"], a.get("capital", 0))

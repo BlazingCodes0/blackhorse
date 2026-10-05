@@ -39,7 +39,10 @@
       "capital": 3,
       "policy_overrides": {},
       "created": "2026-10-05T06:33:22Z",
-      "mode": "LIVE"
+      "mode": "LIVE",
+      "pairs": [
+        "DOT/USD"
+      ]
     },
     "agent_5": {
       "id": "agent_5",
@@ -50,7 +53,10 @@
       "capital": 10,
       "mode": "LIVE",
       "policy_overrides": {},
-      "created": "2026-10-05T19:18:50Z"
+      "created": "2026-10-05T19:18:50Z",
+      "pairs": [
+        "DOT/USD"
+      ]
     }
   },
   "next_id": 6
