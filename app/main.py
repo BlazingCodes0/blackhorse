@@ -1609,7 +1609,20 @@ class BlackHorse(QMainWindow):
                 folder = _pb.Path.home()/"blackhorse"/"logs"/"storybook"/f"{slug}_project"/section_item.text()
                 try: folder.mkdir(parents=True, exist_ok=True)
                 except Exception: pass
-                fname = _t.strftime('%Y-%m-%dT%H-%M-%S', _t.gmtime()).replace(':','-') + '.md'
+                base = text.splitlines()[0][:40] if text else ''
+                # turn the first line into a readable, filesystem-safe file name
+                safe = _re.sub(r'[^a-zA-Z0-9]+', '_', base).strip('_').lower()
+                safe = (safe or _t.strftime('%Y-%m-%d', _t.gmtime()))[:37]
+                # chapters keep a chapter number as well as a name
+                if section_item.text() == 'chapters':
+                    try:
+                        _meta = _json.loads(f.read_text())
+                        ch_count = len(_meta.get('chapters', [])) + 1
+                    except Exception:
+                        ch_count = 1
+                    fname = f"chapter_{ch_count:02d}_{safe}.md"
+                else:
+                    fname = f"{safe}.md"
                 folder.joinpath(fname).write_text(text)
                 # also push into project JSON chapters/notes if applicable
                 for f in (_pb.Path.home()/"blackhorse"/"logs"/"storybook").glob('*.json'):
