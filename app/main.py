@@ -1646,8 +1646,8 @@ class BlackHorse(QMainWindow):
         msg_lines.append(f"Section: {section}")
         msg = "\n".join(msg_lines) + "\n\nDo you want me to continue?"
         ret = QMessageBox.question(self, "Confirm delete", msg,
-                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if ret != QMessageBox.Yes:
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
             return
         # perform delete
         if target_json and section == 'chapters':
