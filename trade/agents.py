@@ -249,6 +249,14 @@ def audited() -> dict:
             "overshoot": round(max(0.0, claimed - avail), 2)}
 
 
+def set_pairs(agent_id: str, pairs: list) -> dict:
+    d = _load(); a = get_agent(agent_id)
+    a['pairs'] = pairs if isinstance(pairs, list) else pairs
+    d['agents'][agent_id] = a
+    _save(d)
+    return _summary(a)
+
+
 def set_override(agent_id: str, key: str, value) -> dict:
     d = _load(); a = get_agent(agent_id)
     a.setdefault("policy_overrides", {})[key] = value

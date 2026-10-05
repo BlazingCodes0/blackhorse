@@ -151,6 +151,17 @@ def decide_all(verdict=None, pair=None) -> dict:
                            holding=holding, pair=pair)
         reports.append({"agent": a["id"], "name": a.get("name"), "profile": a.get("profile"), "mode": a.get("mode"),
                         "decision": d, "spendable": avail, "holding": holding})
+        # crude pair-specific size check before any market/limit hit
+        try:
+            import order_rules
+            _act = d.get('action')
+            if _act in ('BUY','SELL'):
+                _min_err = order_rules.assess_size(pair or d.get('pair','DOT/USD'), d.get('entry'), d.get('size_quote',0) or 0)
+                if _min_err:
+                    d['action'] = 'HOLD'
+                    d['reason'] = f"size check: {_min_err}"
+        except Exception:
+            pass
         if d.get("action") in ("BUY","SELL"):
             try:
                 import heart
