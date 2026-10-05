@@ -1532,6 +1532,9 @@ class BlackHorse(QMainWindow):
                                     if meta.get('thread'): meta['thread'][-1]['a']=reply
                                     f.write_text(_json.dumps(meta, indent=2)); break
                             except Exception: pass
+                    # always tell the owner, even if no project row is selected
+                    self.stories_chat.append(f"{reply}")
+                    self.stories_chat.verticalScrollBar().setValue(self.stories_chat.verticalScrollBar().maximum())
                     self._stories_show()
                     return
                 QTimer.singleShot(700, _reap)
