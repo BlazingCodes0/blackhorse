@@ -585,7 +585,15 @@ def storybook(action, project="default", character=None, detail=None, chapter=No
     if action == "create_project":
         data["title"] = project or data.get("title") or "untitled"
         fp.write_text(json.dumps(data, indent=2))
-        return f"created/opened project '{data['title']}'"
+        proj_dir = root/f"{slug}_project"
+        try:
+            (proj_dir/"ideas").mkdir(parents=True, exist_ok=True)
+            (proj_dir/"scenes").mkdir(parents=True, exist_ok=True)
+            (proj_dir/"characters").mkdir(parents=True, exist_ok=True)
+            (proj_dir/"notes").mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return f"created/opened project '{data['title']}' with dirs: project/ideas, project/scenes, project/characters, project/notes"
     if action == "add_character_detail":
         if not character or not detail:
             return "(error: need character and detail)"
