@@ -1477,7 +1477,20 @@ class BlackHorse(QMainWindow):
             try:
                 meta=json.loads(f.read_text())
                 if meta.get("title")==title:
-                    self.stories_view.setPlainText(json.dumps(meta, indent=1))
+                    # middle pane is for reading the story, not JSON
+                    lines=[]
+                    for ch in meta.get("chapters", []):
+                        lines.append(f"CHAPTER — {ch.get('title','untitled')}
+{ch.get('text','')[:3000]}
+")
+                    if not lines:
+                        lines.append("(no chapters yet — add one with the prompt, or it will appear here as chapters.json grows)")
+                    for ch in meta.get("characters", {}).items():
+                        vals=ch[1] if isinstance(ch[1],list) else []
+                        lines.append(f"CHARACTER {ch[0]}:")
+                        for v in vals[:6]:
+                            lines.append(f" - {v.get('detail','')}")
+                    self.stories_view.setPlainText("\n\n".join(lines))
                     thread = meta.get("thread") or []
                     self.stories_chat.setPlainText("\n\n".join(f"YOU: {t.get('q') or ''}\nSPICE: {t.get('a') or ''}" for t in thread) or "(no remembered conversation yet)")
                     return
