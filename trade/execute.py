@@ -151,10 +151,14 @@ def execute(plan: dict, pair: str = None, mode: str = None) -> dict:
         else entry * (1 - SLIPPAGE_PCT_PER_SIDE / 100)
     qty = size_quote / fill
     agent = plan.get("agent", "house")
+    ch = plan.get("channel") or ""
+    interval = {"ripple": "60m", "wave": "240m", "tide": "1440m"}.get(str(ch).lower(), None)
+    edge_cell = f"{interval or '?'}{plan['action']}"
     pos = portfolio.open_position(agent=agent, pair=pair or "DOT/USD", side=plan["action"],
                                   entry=fill, qty=qty, stop=plan.get("stop"),
                                   target=plan.get("target"), fee_pct=FEE_PCT_PER_SIDE,
-                                  venue=heart_venue(), note=f"{mode} fill", mode=mode)
+                                  venue=heart_venue(), note=f"{mode} fill", mode=mode,
+                                  interval=interval, edge_cell=edge_cell)
     # record the DB trail (idempotent order, fill, position) — non-fatal if absent
     try:
         import store
@@ -168,7 +172,8 @@ def execute(plan: dict, pair: str = None, mode: str = None) -> dict:
             store.set_order_status(oid, "FILLED", raw={"mode": mode, "fill": fill})
             store.add_fill(oid, fill, qty, fee=pos.get("fee_entry", 0.0), fee_currency="USD")
         store.open_position(pos["id"], agent, pair or "DOT/USD", plan["action"], fill, qty,
-                            stop=plan.get("stop"), target=plan.get("target"), mode=mode)
+                            stop=plan.get("stop"), target=plan.get("target"), mode=mode,
+                            interval=interval, edge_cell=edge_cell)
     except Exception:
         pass
     # reserve risk from treasury (so available shrinks while position is open)
