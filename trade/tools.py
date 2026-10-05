@@ -494,6 +494,74 @@ def adabot(pair, intervals="60,240,1440"):
         return f"adabot error: {e}"
 
 
+
+@tool("route_images_preview", "Scan a folder, list images and the rotation action BlackHorse would take for each. Does NOT touch files.",
+      {"src_dir": "source folder", "dst_folder": "target folder"})
+def route_images_preview(src_dir, dst_folder):
+    import os, json
+    try:
+        from PIL import Image
+    except ImportError:
+        return "(error: Pillow not installed)"
+    if not os.path.isdir(src_dir):
+        return f"(error: no such folder {src_dir})"
+    rows = []
+    for f in sorted(os.listdir(src_dir)):
+        if not f.lower().endswith(('.jpg','.jpeg','.png','.gif','.webp')):
+            continue
+        src = os.path.join(src_dir, f)
+        try:
+            im = Image.open(src)
+            w,h = im.size
+            orient = 'portrait' if h>w else 'landscape' if w>h else 'square'
+            rows.append({
+                "src": f,
+                "dst": f,
+                "orientation": orient,
+                "width": w,
+                "height": h,
+                "suggested_rotation": 0,
+                "action": "copy",
+            })
+        except Exception as e:
+            rows.append({"src": f, "error": str(e)})
+    return json.dumps({"src_dir": src_dir, "dst_folder": dst_folder, "count": len(rows), "items": rows}, indent=1)
+
+@tool("route_images_apply", "Copy routed images from src to dst. Owner first sends the edited item list like '[{\"src\":\"photo.jpg\",\"dst\":\"rotated.jpg\",\"rotation\":90}]' to apply; original files are left untouched.",
+      {"src_dir": "source folder", "dst_folder": "target folder", "items": "json list of rows like [{\"src\":\"photo.jpg\",\"dst\":\"rotated.jpg\",\"rotation\":90}]"})
+def route_images_apply(src_dir, dst_folder, items):
+    import os, json, shutil
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return "(error: Pillow not installed)"
+    if not os.path.isdir(src_dir):
+        return f"(error: no such folder {src_dir})"
+    os.makedirs(dst_folder, exist_ok=True)
+    try:
+        rows = json.loads(items) if isinstance(items, str) else (items or [])
+    except Exception as e:
+        return f"(error: items must be JSON: {e})"
+    out=[]
+    for r in rows:
+        s = r.get("src") or r.get("file")
+        d = r.get("dst") or s
+        rot = int(r.get("rotation", r.get("rotate", 0)) or 0)
+        if not s or not d:
+            out.append({"src": s,"error":"missing src/dst"}); continue
+        src_path = os.path.join(src_dir, s)
+        dst_path = os.path.join(dst_folder, d)
+        try:
+            im = Image.open(src_path)
+            if rot % 360 == 90: im = im.transpose(Image.ROTATE_90)
+            elif rot % 360 == 180: im = im.transpose(Image.ROTATE_180)
+            elif rot % 360 == 270: im = im.transpose(Image.ROTATE_270)
+            im.save(dst_path)
+            out.append({"src": s, "dst": d, "rotation": rot, "copied": True})
+        except Exception as e:
+            out.append({"src": s, "dst": d, "error": str(e)})
+    return json.dumps({"copied_dir": dst_folder, "count": len(out), "items": out}, indent=1)
+
 if __name__ == "__main__":
     import sys
     cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
