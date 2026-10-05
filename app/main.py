@@ -1636,15 +1636,28 @@ class BlackHorse(QMainWindow):
                     match=f; break
         # tell the user exactly what is about to be removed
         msg_lines = []
-        if section == 'chapters':
-            msg_lines.append(f"Chapter entry will be removed from JSON: target_json.name if target_json else '(no json)'")
-        if match:
-            msg_lines.append(f"File on disk will be removed: {match}")
-        if not msg_lines:
-            msg_lines.append("No matching file was found for the highlighted entry.")
-        msg_lines.append(f"Project: {project_title}")
-        msg_lines.append(f"Section: {section}")
-        msg = "\n".join(msg_lines) + "\n\nDo you want me to continue?"
+        if section == 'chapters' and target_json:
+            try:
+                meta=json.loads(target_json.read_text())
+                matches=[c for c in meta.get('chapters',[]) if c.get('title','').startswith(fn_item.text()) or c.get('text','').startswith(fn_item.text())]
+                msg_lines.append(f"Removing {len(matches)} chapter record(s)<icide JSON: {target_json}")
+                for m in matches:
+                    msg_lines.append(f"  - '{m.get('title','')}'")
+            except Exception:
+                msg_lines.append(f"Could not parse JSON chapter records from {target_json}; proceed with caution.")
+            if match:
+                msg_lines.append(f"Will also remove this file from the chapters folder: {match}")
+            else:
+                msg_lines.append("No corresponding physical chapter file found on disk.")
+        else:
+            msg_lines.append(f"Project: {project_title}")
+            msg_lines.append(f"Section: {section}")
+            if match:
+                msg_lines.append(f"Will remove this physical file:\n  {match}")
+            else:
+                msg_lines.append("No physical file will be removed from this section.")
+            msg_lines.append("This only removes the selected item; it does not remove the whole project, the notes folder, or other chapters.")
+        msg = "\n".join(msg_lines) + "\n\nProceed ONLY if this is what you want removed."
         ret = QMessageBox.question(self, "Confirm delete", msg,
                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if ret != QMessageBox.StandardButton.Yes:
