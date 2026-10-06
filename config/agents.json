@@ -82,7 +82,9 @@
       "enabled": true,
       "capital": 10,
       "mode": "LIVE",
-      "policy_overrides": {},
+      "policy_overrides": {
+        "require_proven_edge": true
+      },
       "created": "2026-10-05T19:18:50Z",
       "pairs": [
         "DOT/USD"
