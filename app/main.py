@@ -626,10 +626,14 @@ class BlackHorse(QMainWindow):
         sig_row.addWidget(self.signal_status); sig_row.addStretch(1)
         v.addLayout(sig_row)
         row_int = QHBoxLayout(); row_int.addWidget(QLabel("intervals"))
-        self.interval_input = QLineEdit("60m,240m,1440m"); self.interval_input.setPlaceholderText("e.g. 60m,15m,60m")
+        self._signal_setup_path = Path.home()/"blackhorse"/"config"/"signal_setup.json"
+        try:
+            _sig_cfg = json.loads(self._signal_setup_path.read_text())
+        except Exception:
+            _sig_cfg = {}
+        self.interval_input = QLineEdit(",".join(_sig_cfg.get("channels") or ["60m", "240m", "1440m"])); self.interval_input.setPlaceholderText("e.g. 60m,15m,60m")
         row_int.addWidget(self.interval_input)
         row_int.addWidget(QLabel("pair"))
-        from PyQt6.QtWidgets import QComboBox
         self.signal_pair_combo = QComboBox()
         try:
             agents_mod, _ = self._agents_mod()
@@ -637,7 +641,16 @@ class BlackHorse(QMainWindow):
         except Exception:
             pairs = ["DOT/USD"]
         self.signal_pair_combo.addItems(pairs)
+        try:
+            saved_pair = _sig_cfg.get("pair")
+            if saved_pair and saved_pair in pairs:
+                self.signal_pair_combo.setCurrentText(saved_pair)
+        except Exception:
+            pass
         row_int.addWidget(self.signal_pair_combo)
+        b_save_sig = QPushButton("Save signal setup")
+        b_save_sig.clicked.connect(self._save_signal_setup)
+        row_int.addWidget(b_save_sig)
         row_int.addStretch(1); v.addLayout(row_int)
         self.signal_view = QTextEdit(); self.signal_view.setReadOnly(True); self.signal_view.setMaximumHeight(150)
         self.signal_view.setFont(QFont("Monospace", 9))
