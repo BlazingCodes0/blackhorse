@@ -838,17 +838,17 @@ class BlackHorse(QMainWindow):
         sig = snap.get("signal", {})
         if sig.get("available"):
             chans = sig.get("channels", {})
-            lines = []
-            for name in ("ripple", "wave", "tide"):
-                c = chans.get(name, {})
+            lines = [f"{sig.get('pair')} @ {sig.get('exchange')} · strategy {sig.get('strategy')} · {sig.get('run_ms')}ms · {sig.get('ts')}"]
+            for name, c in chans.items():
+                rr = c.get("marketResult") or {}
+                r = c.get("RSI") or {}
+                adv = c.get("advisor") or {}
                 lines.append(
-                    f"{name:7s} {str(c.get('interval','?')):>6}  {str(c.get('action','?')):5s} "
-                    f"conf={c.get('confidence')}  strength={round(c.get('strength') or 0,3)} "
-                    f"({'rising' if c.get('strengthDirection')=='rising' else c.get('strengthDirection')}) "
-                    f"[{c.get('trendState')}/{c.get('spreadDirection')}]")
-            self.signal_view.setPlainText(
-                f"{sig.get('pair')} @ {sig.get('exchange')} · strategy {sig.get('strategy')} · "
-                f"{sig.get('run_ms')}ms · {sig.get('ts')}\n" + "\n".join(lines))
+                    f"\n{name:8s} {c.get('interval','?'):>5}  {c.get('action','?'):5s} conf={c.get('confidence')}  strength={round(c.get('strength') or 0,3)} ({c.get('strengthDirection')})")
+                lines.append(f"    trend={c.get('trendState')} spread={c.get('spreadDirection')} RSI={r.get('currentRSI')} entryEligible={c.get('entryEligible')} exitEligible={c.get('exitEligible')}")
+                lines.append(f"    rangeSignal={c.get('rangeSignal')} rangeBias={c.get('rangeBias')} curve stop={rr.get('stopLoss')} target={rr.get('takeProfit')}")
+                lines.append(f"    advisor buy={adv.get('buy')} sell={adv.get('sell')}")
+            self.signal_view.setPlainText("\n".join(lines))
             self.signal_status.setText("available")
             self.signal_status.setStyleSheet("color:#22c55e")
         else:
