@@ -58,6 +58,7 @@ DEFAULTS = {
         "watchdog": True,
         "egress": True,
         "integrity": True,
+        "bluetooth": True,
     },
 }
 

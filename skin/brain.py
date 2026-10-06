@@ -730,7 +730,7 @@ def sweep() -> str:
     if not esc:
         # ALERT-only batch: local tier already adjudicated — the brain is not
         # needed, and it must not burn a budget slot. CRITICALs still go up.
-        crits = [t for t in threats if t.get("level") == "CRITICAL"]
+        crits = [t for t in threats if t.get("level") == "CRITICAL" or t.get("source") == "net_check"]
         if not crits:
             _mark_handled([], threats)
             return "(ALERT-only batch — local tier handled, brain skipped)"
@@ -752,14 +752,14 @@ def sweep() -> str:
         # Free the brain from ALERT-only noise: the local rule tier already
         # adjudicated every ALERT. The expensive tier only weighs in on
         # CRITICAL events. ALERT-only ticks are marked handled locally.
-        crits = [t for t in threats if t.get("level") == "CRITICAL"]
+        crits = [t for t in threats if t.get("level") == "CRITICAL" or t.get("source") == "net_check"]
         if not crits:
             _mark_handled([], threats)
             return "(ALERT-only batch — local tier handled, brain skipped)"
         lines = [f"- [{t.get('ts')}] {t.get('source')}: {t.get('message')}" for t in crits[-20:]]
         prompt = (
             "BLACKHORSE PERIODIC SECURITY SWEEP. You are the brain; the skin reports the "
-            "new CRITICAL events below (ALERTs are handled locally). Are any of these REAL "
+            "new CRITICAL + network-drop events below (other ALERTs are handled locally). Are any of these REAL "
             "threats needing action, or is this expected local activity? Reply concisely.\n" + "\n".join(lines))
         handled_esc, handled_thr = [], crits
 

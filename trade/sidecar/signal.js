@@ -75,6 +75,8 @@ async function main() {
     compact = raw;
   }
 
+  // keep the MA cross series the compactor would otherwise drop
+  if (raw && raw.signals) compact.signals = raw.signals;
   fs.writeFileSync(out, JSON.stringify(compact));
   try { fs.unlinkSync(rawPath); } catch (_) {}
 

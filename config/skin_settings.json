@@ -1,7 +1,7 @@
 {
   "master_enabled": true,
   "llm_enabled": false,
-  "max_llm_calls_per_min": 6,
+  "max_llm_calls_per_min": 10,
   "llm_timeout_seconds": 13,
   "llm_model": "qwen2.5:0.5b",
   "llm_keep_alive_seconds": 0,
@@ -15,7 +15,8 @@
     "net_check": true,
     "watchdog": true,
     "egress": true,
-    "integrity": true
+    "integrity": true,
+    "bluetooth": true
   },
   "brain_retry_seconds": 20
 }

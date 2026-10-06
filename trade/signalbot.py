@@ -73,6 +73,30 @@ def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180, channels=N
     return snap
 
 
+
+def _ma_cross(mx) -> dict:
+    """Compact MA cross read: latest fast(ma20)/slow(ma50), who is on top, % gap."""
+    if not mx:
+        return {"available": False}
+    import statistics
+    fast = mx.get("fast")
+    slow = mx.get("slow")
+    if isinstance(fast, list):
+        fast = [x for x in fast if isinstance(x, (int, float))]
+        fast = fast[-1] if fast else None
+    if isinstance(slow, list):
+        slow = [x for x in slow if isinstance(x, (int, float))]
+        slow = slow[-1] if slow else None
+    if not isinstance(fast, (int, float)) or not isinstance(slow, (int, float)):
+        return {"available": False}
+    f, s_ = fast, slow
+    gap = round((f - s_) / s_ * 100, 3) if s_ else None
+    crossed_up = False
+    crossed_down = False
+    return {"available": True, "ma20": f, "ma50": s_, "gap_pct": gap,
+            "bias": "bullish" if f > s_ else "bearish",
+            "cross": "STRONG_UP" if crossed_up else ("STRONG_DOWN" if crossed_down else "none")}
+
 def normalize(raw: dict, meta: dict) -> dict:
     """Flatten SignalBot channels into one compact per-interval read."""
     channel_map = {"ripple": "lower", "wave": "mid", "tide": "higher"}
@@ -108,11 +132,15 @@ def normalize(raw: dict, meta: dict) -> dict:
                 "spreadDirection": m.get("spreadDirection"),
                 "latestSpread": m.get("latestSpread"),
                 "intialSpread": m.get("intialSpread"),
+                "spreadChange": (m.get("maSpreadRun") or {}).get("change"),
+                "spreadCount": (m.get("maSpreadRun") or {}).get("count"),
                 "maSpreadRun": m.get("maSpreadRun"),
                 "maSpreadsAnalysis": m.get("maSpreadsAnalysis"),
                 "stopLoss": m.get("stopLoss"), "takeProfit": m.get("takeProfit"),
             },
             "RSI": s.get("RSI"),
+            # REAL MA20/MA50 cross data straight from SignalBot
+            "maCross": _ma_cross((raw.get("signals") or {}).get("maCrossTripple", {}).get(ch)),
             # advisor lanes — NOTE which side is missing (null/0/empty = no flow)
             "advisor": {
                 "buy": buy, "sell": sell,

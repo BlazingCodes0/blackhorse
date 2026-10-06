@@ -26,6 +26,11 @@ sys.path.insert(0, str(BH / "trade"))
 sys.path.insert(0, str(BH / "memory"))
 STATE = BH / "logs" / "loop_state.json"
 SIGNAL = BH / "logs" / "signal_latest.json"
+SETUP = BH / "config" / "signal_setup.json"
+
+
+def _setup() -> dict:
+    return _load(SETUP, {})
 
 
 def _load(path, default):
@@ -46,8 +51,12 @@ def _signal_age() -> float:
     return time.time() - SIGNAL.stat().st_mtime
 
 
-def cycle(refresh_signal=True, ask_brain=True, pair="DOT/USD", cfg=None) -> dict:
+def cycle(refresh_signal=True, ask_brain=True, pair=None, cfg=None) -> dict:
     cfg = cfg or {}
+    setup = _setup()
+    if not pair:
+        pair = setup.get("pair") or "DOT/USD"
+    channels = setup.get("channels") or None
     rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     # 1. heartbeat — must be first, or Heart parks everything
@@ -62,7 +71,7 @@ def cycle(refresh_signal=True, ask_brain=True, pair="DOT/USD", cfg=None) -> dict
     if refresh_signal and _signal_age() > cfg.get("signal_max_age", 600):
         try:
             import signalbot
-            sig = signalbot.run(pair=pair, merge_daytrade=True)
+            sig = signalbot.run(pair=pair, channels=channels, merge_daytrade=True)
             rec["signal_refresh"] = "ok" if sig.get("available") else sig.get("error")
         except Exception as e:
             rec["signal_refresh"] = f"error: {e}"
@@ -212,7 +221,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--interval", type=int, default=300)
-    ap.add_argument("--pair", default="DOT/USD")
+    ap.add_argument("--pair", default=None)
     ap.add_argument("--no-signal", action="store_true")
     ap.add_argument("--no-brain", action="store_true")
     ap.add_argument("--night", action="store_true", help="run the overnight watchlist shift")

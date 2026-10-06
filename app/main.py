@@ -845,7 +845,15 @@ class BlackHorse(QMainWindow):
                 adv = c.get("advisor") or {}
                 lines.append(
                     f"\n{name:8s} {c.get('interval','?'):>5}  {c.get('action','?'):5s} conf={c.get('confidence')}  strength={round(c.get('strength') or 0,3)} ({c.get('strengthDirection')})")
-                lines.append(f"    trend={c.get('trendState')} spread={c.get('spreadDirection')} RSI={r.get('currentRSI')} entryEligible={c.get('entryEligible')} exitEligible={c.get('exitEligible')}")
+                lines.append(f"    trend={rr.get('trendState')} spread={rr.get('spreadDirection')} RSI={r.get('currentRSI')} entryEligible={c.get('entryEligible')} exitEligible={c.get('exitEligible')}")
+                # the ACTUAL spread numbers (the word alone hides magnitude)
+                chg = rr.get('spreadChange')
+                cnt = rr.get('spreadCount')
+                if chg is not None:
+                    arrow = "↑improving" if chg > 0 else ("↓weakening" if chg < 0 else "→flat")
+                    lines.append(f"    SPREAD change={chg:+.4f} over {cnt} bars {arrow} · latest={rr.get('latestSpread')} (was {rr.get('intialSpread')})")
+                mx = c.get('maCross') or {}
+                lines.append(f"    MA20={mx.get('ma20')} MA50={mx.get('ma50')} gap={mx.get('gap_pct')}% bias={mx.get('bias')} cross={mx.get('cross')}")
                 lines.append(f"    rangeSignal={c.get('rangeSignal')} rangeBias={c.get('rangeBias')} curve stop={rr.get('stopLoss')} target={rr.get('takeProfit')}")
                 lines.append(f"    advisor buy={adv.get('buy')} sell={adv.get('sell')}")
             self.signal_view.setPlainText("\n".join(lines))

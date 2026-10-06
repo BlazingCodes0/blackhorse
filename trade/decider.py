@@ -231,14 +231,32 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
     if cfg.get("require_proven_edge", True) and edge_status != "PROVEN":
         # refuse to trade a cell the data says is losing or unproven
         return None
-    # --- REAL MA-context gate: use the actual SignalBot market context ---
+    # --- REAL MA-context gate: use the actual SignalBot NUMBERS, not text ---
+    # The text label ("improving"/"weakening") collapses a 0.003 move and a 3.6
+    # move into the same word. We gate on the real numeric spread change instead.
     mr = c.get("marketResult") or {}
     trend = (mr.get("trendState") or c.get("trendState") or "").lower()
-    spread = (mr.get("spreadDirection") or c.get("spreadDirection") or "").lower()
-    if side == "BUY" and spread == "weakening":
-        return None                      # MA spread moving against a long
-    if side == "SELL" and spread == "improving":
-        return None                      # MA spread moving against the exit
+    run = mr.get("maSpreadRun") or {}
+    latest = mr.get("latestSpread")
+    change = run.get("change")            # numeric delta over the run window
+    if change is None and latest is not None and mr.get("intialSpread") is not None:
+        change = float(latest) - float(mr["intialSpread"])
+    eps = float(cfg.get("spread_flat_epsilon", 0.02))   # "flat" band
+    if change is not None:
+        change = float(change)
+        # BUY (long entry): refuse only if spread is genuinely moving AGAINST it
+        if side == "BUY" and change < -eps:
+            return None
+        # SELL (exit): refuse only if spread is genuinely moving AGAINST the exit
+        if side == "SELL" and change > eps:
+            return None
+    else:
+        # no number available -> fall back to the text, but only as a last resort
+        spread = (mr.get("spreadDirection") or c.get("spreadDirection") or "").lower()
+        if side == "BUY" and spread == "weakening":
+            return None
+        if side == "SELL" and spread == "improving":
+            return None
     if cfg.get("require_trend_agreement", False):
         if side == "BUY" and trend == "falling":
             return None
