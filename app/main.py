@@ -1481,9 +1481,10 @@ class BlackHorse(QMainWindow):
         b_prev = QPushButton("◀ prev"); b_prev.clicked.connect(self._stories_prev)
         b_next = QPushButton("next ▶"); b_next.clicked.connect(self._stories_next)
         rownav.addWidget(b_prev); rownav.addWidget(b_next); rownav.addStretch(1); v.addLayout(rownav)
-        self.stories_view = QTextEdit(); self.stories_view.setReadOnly(True); self.stories_view.setFont(QFont("Monospace", 9))
+        from PyQt6.QtWidgets import QPlainTextEdit
+        self.stories_view = QPlainTextEdit(); self.stories_view.setReadOnly(True); self.stories_view.setFont(QFont("Georgia", 13))
         v.addWidget(QLabel("— project details —")); v.addWidget(self.stories_view, 2)
-        self.stories_chat = QTextEdit(); self.stories_chat.setReadOnly(True); self.stories_chat.setFont(QFont("Monospace", 9))
+        self.stories_chat = QPlainTextEdit(); self.stories_chat.setReadOnly(True); self.stories_chat.setFont(QFont("Menlo", 12))
         v.addWidget(QLabel("— project conversation (remembered) —")); v.addWidget(self.stories_chat, 2)
         row2 = QHBoxLayout()
         self.stories_prompt = QLineEdit(); self.stories_prompt.returnPressed.connect(self._stories_send)
@@ -1755,7 +1756,7 @@ class BlackHorse(QMainWindow):
                     except Exception: pass
             # don't block the GUI: call Spice on a worker thread and reveal when done
             reply_holder=[]
-            self.stories_chat.append(f"<b>you:</b> {text}\n<i>Spice: thinking…</i>")
+            self.stories_chat.appendPlainText(f"you: {text}\nSpice: thinking…")
             self.stories_chat.verticalScrollBar().setValue(self.stories_chat.verticalScrollBar().maximum())
             def _run():
                 reply_holder.append(_work())
@@ -1777,14 +1778,14 @@ class BlackHorse(QMainWindow):
                                     f.write_text(_json.dumps(meta, indent=2)); break
                             except Exception: pass
                     # always tell the owner, even if no project row is selected
-                    self.stories_chat.append(f"{reply}")
+                    self.stories_chat.appendPlainText(reply)
                     self.stories_chat.verticalScrollBar().setValue(self.stories_chat.verticalScrollBar().maximum())
                     self._stories_show()
                     return
                 QTimer.singleShot(700, _reap)
             _reap()
         except Exception as e:
-            self.stories_chat.append(f"<b>error:</b> {e}")
+            self.stories_chat.appendPlainText(f"error: {e}")
 
     def _build_skin(self):
         from PyQt6.QtWidgets import QScrollArea
