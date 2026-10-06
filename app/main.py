@@ -73,11 +73,11 @@ class BlackHorse(QMainWindow):
         self._setup_tray()
 
         # live-refresh the threat log
-        self.timer = QTimer(self); self.timer.timeout.connect(self.refresh_log); self.timer.start(5000)
-        self.timer2 = QTimer(self); self.timer2.timeout.connect(self.refresh_brain); self.timer2.start(5000)
-        self.timer3 = QTimer(self); self.timer3.timeout.connect(self.refresh_master); self.timer3.start(5000)
-        self.timer4 = QTimer(self); self.timer4.timeout.connect(self.refresh_console); self.timer4.start(5000)
-        self.timer5 = QTimer(self); self.timer5.timeout.connect(self.refresh_dashboard); self.timer5.start(5000)
+        self.timer = QTimer(self); self.timer.timeout.connect(self.refresh_log); self.timer.start(10000)
+        self.timer2 = QTimer(self); self.timer2.timeout.connect(self.refresh_brain); self.timer2.start(10000)
+        self.timer3 = QTimer(self); self.timer3.timeout.connect(self.refresh_master); self.timer3.start(10000)
+        self.timer4 = QTimer(self); self.timer4.timeout.connect(self.refresh_console); self.timer4.start(10000)
+        self.timer5 = QTimer(self); self.timer5.timeout.connect(self.refresh_dashboard); self.timer5.start(10000)
         import os as _os
         if _os.environ.get("BLACKHORSE_PROFILE"):
             import time as _time
@@ -344,7 +344,7 @@ class BlackHorse(QMainWindow):
         self.sb_edge_minutes = QSpinBox(); self.sb_edge_minutes.setRange(5, 1440); self.sb_edge_minutes.setValue(int(self.edge_rules_cfg.get("every_minutes", 60)))
         self.sb_edge_minutes.valueChanged.connect(self._on_edge_minutes_changed)
         row2.addWidget(self.sb_edge_minutes); row2.addStretch(1); v.addLayout(row2)
-        self.edge_rules_timer = QTimer(self); self.edge_rules_timer.timeout.connect(self.run_edge_rules_update); self.edge_rules_timer.start(1000)  # tick 1s, each tick check last_ts
+        self.edge_rules_timer = QTimer(self); self.edge_rules_timer.timeout.connect(self.run_edge_rules_update); self.edge_rules_timer.start(5000)  # tick 1s, each tick check last_ts
         self._last_edge_rules_run = 0
 
         self.brain_view = QTextEdit(); self.brain_view.setReadOnly(True)
@@ -655,7 +655,7 @@ class BlackHorse(QMainWindow):
         scroll.setWidget(w)
         self.pages[3] = scroll; scroll.hide()
         QTimer.singleShot(400, self.refresh_trade)
-        self.timer_trade = QTimer(self); self.timer_trade.timeout.connect(self.refresh_trade); self.timer_trade.start(5000)
+        self.timer_trade = QTimer(self); self.timer_trade.timeout.connect(self.refresh_trade); self.timer_trade.start(10000)
         return scroll
 
     def _reload_exchanges(self):
@@ -1782,7 +1782,7 @@ class BlackHorse(QMainWindow):
                     self.stories_chat.verticalScrollBar().setValue(self.stories_chat.verticalScrollBar().maximum())
                     self._stories_show()
                     return
-                QTimer.singleShot(700, _reap)
+                QTimer.singleShot(1500, _reap)
             _reap()
         except Exception as e:
             self.stories_chat.appendPlainText(f"error: {e}")
