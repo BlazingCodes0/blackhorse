@@ -152,7 +152,7 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
     allowed = cfg.get("channels")
     # SPREAD TRUTH (owner rule): trust ONLY the 15m spread read. Other timeframes
     # are noise or too slow. Find the 15m lane regardless of which channel we trade.
-    spread15 = _spread_15m(ch)
+    shared15 = _shared_15m(ch)
     plans = []
     for name, c in (("ripple", ripple), ("wave", wave), ("tide", tide)):
         if allowed and name not in allowed:
@@ -165,14 +165,14 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
         direction = c.get("strengthDirection")
         # BUY
         if s <= cfg["entry_strength_max"] and not _missing(adv.get("buy")):
-            plans.append(_build(name, c, "BUY", buy, s, direction, available, cfg, reasons, _edge, pair, spread15))
+            plans.append(_build(name, c, "BUY", buy, s, direction, available, cfg, reasons, _edge, pair, shared15))
         # SELL (only if we can actually sell — advisor sell present)
         if s >= cfg["exit_strength_min"] and not _missing(adv.get("sell")):
             # SPOT-ONLY: cannot sell what we do not hold.
             if spot_only and float(holding or 0) <= 0:
                 reasons.append(f"{name} SELL skipped: spot-only, no inventory held")
             else:
-                plans.append(_build(name, c, "SELL", sell, s, direction, available, cfg, reasons, _edge, pair, spread15))
+                plans.append(_build(name, c, "SELL", sell, s, direction, available, cfg, reasons, _edge, pair, shared15))
 
     plans = [p for p in plans if p]
     if not plans:
@@ -220,25 +220,33 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
     }
 
 
-def _spread_15m(channels: dict) -> dict:
-    """The ONLY trustworthy spread read is the 15m timeframe (owner rule).
-    Other timeframes are noise or too slow. Locate the 15m lane by its interval —
-    it may be labeled wave15 (dayTrade lane) or ripple/wave/tide with interval 15m."""
+def _shared_15m(channels: dict) -> dict:
+    """The 15m lane is the SOURCE OF TRUTH for the shared signals: the MA spread
+    AND the MA20/MA50 cross (owner rule). Other intervals keep their own
+    range/trend/structure, but spread + MA-cross are read from 15m only.
+    The lane may be labeled wave15 (dayTrade merge) or be any channel with
+    interval == 15m."""
     if not channels:
         return {}
     for name, c in channels.items():
         if str(c.get("interval")) == "15m":
             mr = c.get("marketResult") or {}
-            return {"interval": "15m", "label": name,
+            mx = c.get("maCross") or {}
+            return {"label": name, "interval": "15m",
+                    # spread
                     "change": mr.get("spreadChange"),
                     "latest": mr.get("latestSpread"),
                     "was": mr.get("intialSpread"),
                     "direction": mr.get("spreadDirection"),
-                    "count": mr.get("spreadCount")}
+                    "count": mr.get("spreadCount"),
+                    # MA cross
+                    "ma20": mx.get("ma20"), "ma50": mx.get("ma50"),
+                    "gap_pct": mx.get("gap_pct"), "bias": mx.get("bias"),
+                    "cross": mx.get("cross"), "trend": mr.get("trendState")}
     return {}
 
 
-def _build(channel, c, side, entry, strength, direction, available, cfg, reasons, edge=None, pair=None, spread15=None):
+def _build(channel, c, side, entry, strength, direction, available, cfg, reasons, edge=None, pair=None, shared15=None):
     f = _num(c.get("floor")); lo = _num(c.get("low")); hi = _num(c.get("high")); ro = _num(c.get("roof"))
     adv = c.get("advisor") or {}
     adv_buy, adv_sell = _num(adv.get("buy")), _num(adv.get("sell"))
@@ -252,14 +260,14 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
     if cfg.get("require_proven_edge", True) and edge_status != "PROVEN":
         # refuse to trade a cell the data says is losing or unproven
         return None
-    # --- REAL MA-context gate: the SPREAD TRUTH is the 15m lane only (owner rule).
+    # --- SHARED-SIGNAL gate: spread AND MA-cross come from 15m only (owner rule).
     # We use the actual numeric spread change, not the text label. Other
-    # timeframes are noise or too slow, so we do NOT read their spread here.
+    # timeframes are noise/too slow, so we do NOT read their spread or cross here.
     mr = c.get("marketResult") or {}
     trend = (mr.get("trendState") or c.get("trendState") or "").lower()
-    if spread15 is None:
-        spread15 = _spread_15m({"15m": c})     # fall back to this channel if it IS 15m
-    change = (spread15 or {}).get("change")
+    if shared15 is None:
+        shared15 = _shared_15m({"15m": c})     # fall back if this channel IS 15m
+    change = (shared15 or {}).get("change")
     eps = float(cfg.get("spread_flat_epsilon", 0.02))   # "flat" band
     if change is not None:
         change = float(change)
@@ -267,11 +275,20 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
             return None                       # 15m spread genuinely against a long
         if side == "SELL" and change > eps:
             return None                       # 15m spread genuinely against the exit
-    elif (spread15 or {}).get("direction"):
-        d = str(spread15["direction"]).lower()
+    elif (shared15 or {}).get("direction"):
+        d = str(shared15["direction"]).lower()
         if side == "BUY" and d == "weakening":
             return None
         if side == "SELL" and d == "improving":
+            return None
+    # MA20/MA50 cross gate (also 15m-trusted). Refuse BUY when 15m cross is bearish
+    # and SELL when bullish — but only when a real cross value exists.
+    ma_cross = (shared15 or {}).get("cross")
+    ma_bias = (shared15 or {}).get("bias")
+    if cfg.get("require_ma_cross_agreement", False) and ma_bias:
+        if side == "BUY" and ma_bias == "bearish":
+            return None
+        if side == "SELL" and ma_bias == "bullish":
             return None
     if cfg.get("require_trend_agreement", False):
         if side == "BUY" and trend == "falling":
@@ -340,10 +357,14 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
         f"target clears round-trip fees ({round(gross_move*100,2)}% > {round(fee_frac*100,2)}%)",
         f"expected net if target hits: {expected_net_pct}% after fees+slippage",
         f"stop distance {round(stop_pct,2)}% within cap {cfg['stop_max_pct']}%",
-        (f"15m spread (the trusted read): change {round(change,4)} over "
-         f"{(spread15 or {}).get('count')} bars · latest {(spread15 or {}).get('latest')} "
-         f"(was {(spread15 or {}).get('was')})" if change is not None else
+        (f"15m spread (trusted read): change {round(change,4)} over "
+         f"{(shared15 or {}).get('count')} bars · latest {(shared15 or {}).get('latest')} "
+         f"(was {(shared15 or {}).get('was')})" if change is not None else
          "15m spread: no numeric read available"),
+        (f"15m MA20/MA50 (trusted): {round((shared15 or {}).get('ma20') or 0,6)} vs "
+         f"{round((shared15 or {}).get('ma50') or 0,6)} gap {(shared15 or {}).get('gap_pct')}% "
+         f"{ma_bias or '?'} cross={ma_cross}" if (shared15 or {}).get('ma20') else
+         "15m MA cross: no read available"),
     ]
     return {"channel": channel, "side": side, "entry": entry, "stop": stop, "target": target,
             "size_quote": size_quote, "risk_quote": risk_quote, "rr": rr, "score": score,

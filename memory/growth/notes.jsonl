@@ -2,3 +2,4 @@
 {"ts": "2026-10-04T15:29:14Z", "kind": "preference", "text": "confirm_pair_before_order=always confirm the pair with the owner before any order", "source": "spice"}
 {"ts": "2026-10-04T15:29:30Z", "kind": "rule", "text": "Before any order, confirm the pair and amount with the owner; default to paper unless they explicitly say live.", "source": "spice-correction"}
 {"ts": "2026-10-06T04:54:43Z", "kind": "rule", "text": "Spread read: trust ONLY the 15m timeframe. Other timeframes (5m/60m/240m/1440m) are noise or too slow for the spread signal.", "source": "owner"}
+{"ts": "2026-10-06T05:00:31Z", "kind": "rule", "text": "Shared signals: BOTH the MA spread AND the MA20/MA50 cross come from the 15m timeframe only. Other intervals use their own range/trend/structure, but spread and MA-cross are 15m-trusted.", "source": "owner"}
