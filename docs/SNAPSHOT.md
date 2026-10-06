@@ -544,3 +544,52 @@ every cycle currently returns HOLD since no setup met strength/price band.
 - GUI->Brain settings: periodic edge_rules study checkbox + every_n minutes now exists in config/edge_rules.json.
 - Scout trading profile/agent was added by error and reverted to avoid confusion; currently only agent_1/agent_2 trading agents.
 - No voice: speaking/hearing is not present anywhere. The word "voice" is only the Spice persona (prose) and a future placeholder.
+
+================================================================================
+## SESSION 7 (2026-10-06) — RECONCILIATION (snapshot vs reality)
+================================================================================
+The snapshot had drifted. Corrections so a resume is accurate:
+
+### Drift fixed
+- can_arm: snapshot said FALSE; REALITY is **TRUE** (an earlier owner request set
+  `require_paper_period=false` in heart/policies/rules.json — commit 9ee2b2c).
+  paper_period is still 0 closed trades, so it is reported as a WARNING, not a block.
+- agents: snapshot said 2; REALITY is **4** enabled:
+    agent_1 Lifecycle   (lifecycle, ripple=60m)   $38
+    agent_2 LiveTest30  (quick, ripple+wave)       $10
+    agent_4 Scalper     (quick, ripple+wave)       $10
+    agent_5 Scalper15   (scalp15, wave15=15m)      $10
+  Total claim $68 of $69.80 real — within budget.
+- watchlist: [DOT/USD, ETH/USD, SOL/USD, XRP/USD] (BTC excluded — NOT_PROVEN).
+
+### Owner rules added this session (DURABLE, in memory/growth)
+1. "Spread read: trust ONLY the 15m timeframe. Other timeframes are noise or too
+   slow." -> decider reads the 15m lane's NUMERIC spread change, not the text label.
+2. "Both the MA spread AND the MA20/MA50 cross come from the 15m timeframe only.
+   Other intervals use their own range/trend/structure." -> decider._shared_15m()
+   supplies both; other channels' MA/spread are ignored for the gate.
+3. spread_flat_epsilon (0.02) distinguishes a noise twitch (-0.013) from a real
+   move (-7.3). require_ma_cross_agreement (false by default).
+
+### Health check (2026-10-06)
+- all code compiles; loop running as night shift (25+ cycles journaled, heartbeat ok)
+- broker responds for all agents; HOLD when no setup (correct "waiting for edge")
+- proven, per the SYSTEM's own fee-honest reports:
+    DOT 60m BUY + SELL | ETH/SOL/XRP 240m BUY | BTC NOT_PROVEN
+- FIXED: agent_5 (scalp15) had require_proven_edge=false -> would trade an UNPROVEN
+  15m cell. Set back to true. All agents now require a PROVEN edge.
+- verified: ETH 240m BUY fires when its floor setup appears (edge PROVEN).
+- live balance: USD ~69.80, DOT ~0.009.
+
+### Still open
+- paper_period: 0 closed trades; the paper period hasn't been run to completion.
+- Confirm whether require_paper_period should stay false (owner-set) or be restored.
+- agent_5 (15m) has no proven edge -> will effectively always HOLD; retarget or disable.
+- Per-pair: only DOT/ETH/SOL/XRP have any proven cell; BTC parked.
+
+### Latest commits
+8574cbb health: close scalp15 unproven-edge bypass; confirm agents wait for edge
+d8e5189 shared signals: MA20/MA50 cross ALSO comes from 15m only (owner rule)
+29ef627 spread: trust ONLY the 15m read (owner rule), encoded not re-asked
+3c98b0f spread: gate on the NUMBERS, not the text label; show them in the GUI
+2984834 docs: snapshot — honest correction (real validators, restored fields, proven 60m)
