@@ -854,7 +854,8 @@ class BlackHorse(QMainWindow):
                     arrow = "↑improving" if chg > 0 else ("↓weakening" if chg < 0 else "→flat")
                     lines.append(f"    SPREAD change={chg:+.4f} over {cnt} bars {arrow} · latest={rr.get('latestSpread')} (was {rr.get('intialSpread')}){trusted}")
                 mx = c.get('maCross') or {}
-                lines.append(f"    MA20={mx.get('ma20')} MA50={mx.get('ma50')} gap={mx.get('gap_pct')}% bias={mx.get('bias')} cross={mx.get('cross')}")
+                ma_trusted = " ⭐TRUSTED" if str(c.get('interval')) == "15m" else " (ma read 15m for truth)"
+                lines.append(f"    MA20={mx.get('ma20')} MA50={mx.get('ma50')} gap={mx.get('gap_pct')}% bias={mx.get('bias')} cross={mx.get('cross')}{ma_trusted}")
                 lines.append(f"    rangeSignal={c.get('rangeSignal')} rangeBias={c.get('rangeBias')} curve stop={rr.get('stopLoss')} target={rr.get('takeProfit')}")
                 lines.append(f"    advisor buy={adv.get('buy')} sell={adv.get('sell')}")
             self.signal_view.setPlainText("\n".join(lines))

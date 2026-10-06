@@ -12,6 +12,7 @@
   "require_proven_edge": true,
   "spread_flat_epsilon": 0.02,
   "spread_trusted_interval": "15m",
+  "require_ma_cross_agreement": false,
   "spot_only": true,
   "rsi_buy_block_above": 70.0,
   "rsi_sell_block_below": 30.0,
