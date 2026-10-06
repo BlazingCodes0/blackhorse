@@ -627,7 +627,18 @@ class BlackHorse(QMainWindow):
         v.addLayout(sig_row)
         row_int = QHBoxLayout(); row_int.addWidget(QLabel("intervals"))
         self.interval_input = QLineEdit("60m,240m,1440m"); self.interval_input.setPlaceholderText("e.g. 60m,15m,60m")
-        row_int.addWidget(self.interval_input); row_int.addStretch(1); v.addLayout(row_int)
+        row_int.addWidget(self.interval_input)
+        row_int.addWidget(QLabel("pair"))
+        from PyQt6.QtWidgets import QComboBox
+        self.signal_pair_combo = QComboBox()
+        try:
+            agents_mod, _ = self._agents_mod()
+            pairs = sorted({p for ag in agents_mod.list_agents() for p in (ag.get('pairs') or [])}) or ["DOT/USD"]
+        except Exception:
+            pairs = ["DOT/USD"]
+        self.signal_pair_combo.addItems(pairs)
+        row_int.addWidget(self.signal_pair_combo)
+        row_int.addStretch(1); v.addLayout(row_int)
         self.signal_view = QTextEdit(); self.signal_view.setReadOnly(True); self.signal_view.setMaximumHeight(150)
         self.signal_view.setFont(QFont("Monospace", 9))
         v.addWidget(self.signal_view)
@@ -950,7 +961,8 @@ class BlackHorse(QMainWindow):
                     _s.path.insert(0, str(Path.home()/"blackhorse"/"trade"))
                 import signalbot as _sig
                 ivs = [x.strip() for x in (self.interval_input.text() if hasattr(self, 'interval_input') else '').split(',') if x.strip()]
-                _sig.run(pair="DOT/USD", strategy="swing", channels=ivs or None)
+                pair = (self.signal_pair_combo.currentText() if hasattr(self, 'signal_pair_combo') else 'DOT/USD')
+                _sig.run(pair=pair, strategy="swing", channels=ivs or None)
             except Exception as e:
                 self._sig_res.err = str(e)
             finally:
