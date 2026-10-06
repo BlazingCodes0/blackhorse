@@ -7,9 +7,11 @@ from net_check import run_all
 from watchdog import sweep
 from egress import scan as egress_scan
 from integrity import scan as integrity_scan
+from bluetooth import scan as bluetooth_scan
 import settings
 
-ENGINES = {"net_check": run_all, "watchdog": sweep, "egress": egress_scan, "integrity": integrity_scan}
+ENGINES = {"net_check": run_all, "watchdog": sweep, "egress": egress_scan,
+           "integrity": integrity_scan, "bluetooth": bluetooth_scan}
 
 def run_enabled():
     if not settings.load().get("master_enabled", True):
