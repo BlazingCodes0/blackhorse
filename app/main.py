@@ -960,6 +960,19 @@ class BlackHorse(QMainWindow):
         except Exception as e:
             self.treasury_label.setText(f"treasury error: {e}")
 
+    def _save_signal_setup(self):
+        import json as _j
+        try:
+            cfg = {"pair": (self.signal_pair_combo.currentText() if hasattr(self, 'signal_pair_combo') else 'DOT/USD'),
+                   "channels": [x.strip() for x in (self.interval_input.text() if hasattr(self, 'interval_input') else '').split(',') if x.strip()]}
+            p = Path.home()/"blackhorse"/"config"/"signal_setup.json"
+            p.write_text(_j.dumps(cfg, indent=2))
+            self.signal_status.setText(f"saved: {cfg['pair']} {','.join(cfg['channels'])}")
+            self.signal_status.setStyleSheet("color:#22c55e")
+        except Exception as e:
+            self.signal_status.setText(f"save error: {e}")
+            self.signal_status.setStyleSheet("color:#ef4444")
+
     def run_signal_now(self):
         import threading
         self.signal_status.setText("running… (~10-20s)")
