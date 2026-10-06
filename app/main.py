@@ -849,9 +849,10 @@ class BlackHorse(QMainWindow):
                 # the ACTUAL spread numbers (the word alone hides magnitude)
                 chg = rr.get('spreadChange')
                 cnt = rr.get('spreadCount')
+                trusted = " ⭐TRUSTED" if str(c.get('interval')) == "15m" else " (read 15m for truth)"
                 if chg is not None:
                     arrow = "↑improving" if chg > 0 else ("↓weakening" if chg < 0 else "→flat")
-                    lines.append(f"    SPREAD change={chg:+.4f} over {cnt} bars {arrow} · latest={rr.get('latestSpread')} (was {rr.get('intialSpread')})")
+                    lines.append(f"    SPREAD change={chg:+.4f} over {cnt} bars {arrow} · latest={rr.get('latestSpread')} (was {rr.get('intialSpread')}){trusted}")
                 mx = c.get('maCross') or {}
                 lines.append(f"    MA20={mx.get('ma20')} MA50={mx.get('ma50')} gap={mx.get('gap_pct')}% bias={mx.get('bias')} cross={mx.get('cross')}")
                 lines.append(f"    rangeSignal={c.get('rangeSignal')} rangeBias={c.get('rangeBias')} curve stop={rr.get('stopLoss')} target={rr.get('takeProfit')}")

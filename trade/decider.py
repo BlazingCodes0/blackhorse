@@ -150,6 +150,9 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
 
     # --- candidates from channels (restricted to the agent's channels if set) ---
     allowed = cfg.get("channels")
+    # SPREAD TRUTH (owner rule): trust ONLY the 15m spread read. Other timeframes
+    # are noise or too slow. Find the 15m lane regardless of which channel we trade.
+    spread15 = _spread_15m(ch)
     plans = []
     for name, c in (("ripple", ripple), ("wave", wave), ("tide", tide)):
         if allowed and name not in allowed:
@@ -162,14 +165,14 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
         direction = c.get("strengthDirection")
         # BUY
         if s <= cfg["entry_strength_max"] and not _missing(adv.get("buy")):
-            plans.append(_build(name, c, "BUY", buy, s, direction, available, cfg, reasons, _edge, pair))
+            plans.append(_build(name, c, "BUY", buy, s, direction, available, cfg, reasons, _edge, pair, spread15))
         # SELL (only if we can actually sell — advisor sell present)
         if s >= cfg["exit_strength_min"] and not _missing(adv.get("sell")):
             # SPOT-ONLY: cannot sell what we do not hold.
             if spot_only and float(holding or 0) <= 0:
                 reasons.append(f"{name} SELL skipped: spot-only, no inventory held")
             else:
-                plans.append(_build(name, c, "SELL", sell, s, direction, available, cfg, reasons, _edge, pair))
+                plans.append(_build(name, c, "SELL", sell, s, direction, available, cfg, reasons, _edge, pair, spread15))
 
     plans = [p for p in plans if p]
     if not plans:
@@ -217,7 +220,25 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
     }
 
 
-def _build(channel, c, side, entry, strength, direction, available, cfg, reasons, edge=None, pair=None):
+def _spread_15m(channels: dict) -> dict:
+    """The ONLY trustworthy spread read is the 15m timeframe (owner rule).
+    Other timeframes are noise or too slow. Locate the 15m lane by its interval —
+    it may be labeled wave15 (dayTrade lane) or ripple/wave/tide with interval 15m."""
+    if not channels:
+        return {}
+    for name, c in channels.items():
+        if str(c.get("interval")) == "15m":
+            mr = c.get("marketResult") or {}
+            return {"interval": "15m", "label": name,
+                    "change": mr.get("spreadChange"),
+                    "latest": mr.get("latestSpread"),
+                    "was": mr.get("intialSpread"),
+                    "direction": mr.get("spreadDirection"),
+                    "count": mr.get("spreadCount")}
+    return {}
+
+
+def _build(channel, c, side, entry, strength, direction, available, cfg, reasons, edge=None, pair=None, spread15=None):
     f = _num(c.get("floor")); lo = _num(c.get("low")); hi = _num(c.get("high")); ro = _num(c.get("roof"))
     adv = c.get("advisor") or {}
     adv_buy, adv_sell = _num(adv.get("buy")), _num(adv.get("sell"))
@@ -231,31 +252,26 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
     if cfg.get("require_proven_edge", True) and edge_status != "PROVEN":
         # refuse to trade a cell the data says is losing or unproven
         return None
-    # --- REAL MA-context gate: use the actual SignalBot NUMBERS, not text ---
-    # The text label ("improving"/"weakening") collapses a 0.003 move and a 3.6
-    # move into the same word. We gate on the real numeric spread change instead.
+    # --- REAL MA-context gate: the SPREAD TRUTH is the 15m lane only (owner rule).
+    # We use the actual numeric spread change, not the text label. Other
+    # timeframes are noise or too slow, so we do NOT read their spread here.
     mr = c.get("marketResult") or {}
     trend = (mr.get("trendState") or c.get("trendState") or "").lower()
-    run = mr.get("maSpreadRun") or {}
-    latest = mr.get("latestSpread")
-    change = run.get("change")            # numeric delta over the run window
-    if change is None and latest is not None and mr.get("intialSpread") is not None:
-        change = float(latest) - float(mr["intialSpread"])
+    if spread15 is None:
+        spread15 = _spread_15m({"15m": c})     # fall back to this channel if it IS 15m
+    change = (spread15 or {}).get("change")
     eps = float(cfg.get("spread_flat_epsilon", 0.02))   # "flat" band
     if change is not None:
         change = float(change)
-        # BUY (long entry): refuse only if spread is genuinely moving AGAINST it
         if side == "BUY" and change < -eps:
-            return None
-        # SELL (exit): refuse only if spread is genuinely moving AGAINST the exit
+            return None                       # 15m spread genuinely against a long
         if side == "SELL" and change > eps:
+            return None                       # 15m spread genuinely against the exit
+    elif (spread15 or {}).get("direction"):
+        d = str(spread15["direction"]).lower()
+        if side == "BUY" and d == "weakening":
             return None
-    else:
-        # no number available -> fall back to the text, but only as a last resort
-        spread = (mr.get("spreadDirection") or c.get("spreadDirection") or "").lower()
-        if side == "BUY" and spread == "weakening":
-            return None
-        if side == "SELL" and spread == "improving":
+        if side == "SELL" and d == "improving":
             return None
     if cfg.get("require_trend_agreement", False):
         if side == "BUY" and trend == "falling":
@@ -324,6 +340,10 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
         f"target clears round-trip fees ({round(gross_move*100,2)}% > {round(fee_frac*100,2)}%)",
         f"expected net if target hits: {expected_net_pct}% after fees+slippage",
         f"stop distance {round(stop_pct,2)}% within cap {cfg['stop_max_pct']}%",
+        (f"15m spread (the trusted read): change {round(change,4)} over "
+         f"{(spread15 or {}).get('count')} bars · latest {(spread15 or {}).get('latest')} "
+         f"(was {(spread15 or {}).get('was')})" if change is not None else
+         "15m spread: no numeric read available"),
     ]
     return {"channel": channel, "side": side, "entry": entry, "stop": stop, "target": target,
             "size_quote": size_quote, "risk_quote": risk_quote, "rr": rr, "score": score,
