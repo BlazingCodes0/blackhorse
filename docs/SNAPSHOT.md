@@ -695,3 +695,59 @@ shadowing the new profile key-by-key (a switch that doesn't switch).
 - Verified: py_compile clean; set_profile/reset/shadow round-trip on a temp
   registry (kept overrides, reset to `{}`, policy_for picked up the new profile);
   CLI round-trip on agent_1/agent_6 (no state change).
+
+==============================================================================
+## SESSION 10 (2026-10-07) — COMMITTED, then: why DOT 240m BUY won't fire + speedup
+==============================================================================
+
+### Committed + snapshotted
+- `3155d1c` "multi-pair repair: per-pair signals/exits/fees, profile switch +
+  user-controlled edge proof" — the whole SESSION 9 worktree landed as ONE
+  commit (22 files, +2093/−354), worktree clean.
+- Full copy snapshotted to `~/fakegit/blackhorsev1.6` (same convention as
+  v1.0–v1.5; NOTE it includes config/exchange_keys.json + .master_key, matching
+  prior snapshots). No git remote configured — local commits only.
+
+### Q: why does the 240m DOT BUY never fire when "entry eligible"?
+"entry eligible" is SignalBot's raw range read (buyScore/RSI/spread), NOT
+BlackHorse's decision. Three independent walls verified in decider.py:
+1. **Proven-edge gate** (decider.py:283): DOT 240m BUY = UNPROVEN cell ->
+   refused. (Moot now: require_proven_edge=OFF by default.)
+2. **Fee gate** (decider.py:373): tide advisor.sell=0/missing -> target falls
+   back to `high` 1.1143 vs entry 1.1114 -> 0.26% gross < 1.20% round-trip
+   (maker 0.004 + taker 0.008). "advisor sell" is `QubitFlow`'s priced lane in
+   rangeSignalPulse.js `buildHeart.activeAvgSell` (=0 when strength 0), and
+   rangeSignalGate refuses to mint sales under strength 0.5
+   ("Setup waiting for: strength >= 0.5 (now 0)"). ALL 5 price sets
+   (sweet/perfected/median/average/averge) are buy-only; signalbot.py copies
+   advisorPrices verbatim — nothing is dropped locally.
+3. **R:R gate**: 0.39 < 2.0. Plus mtf_buy_override needs 15m entryEligible (False).
+So: a DOT 240m BUY can only fire when advisor.sell appears (strength >= <amount>) so
+the target isn't `high`, and the entry/R:R clear — i.e., near the top of the
+range, not at the floor. Verified NO agent_6 orders ever: DB has only agent_1
+orders; decisions table = HOLD.
+
+### Q: refresh too slow — what we measured and the plan (NOT yet implemented)
+Measured the real per-pair cost (the loop's exact path):
+- One pair refresh = swing + dayTrade merge = **~18s** warm cache (~9s CPU each
+  pass); plain swing run ~15s; cold cache first run higher.
+- Watchlist sweep is SERIAL (`for pair in pairs`) -> ~72–90s per full sweep,
+  gated to at most every signal_max_age=600s.
+- Kraken is NOT the bottleneck: `core/sharedMarketCache.js` DISK-caches
+  OHLC/ticker after ~60s across processes (`/tmp/qubitflow-market-cache`), so
+  swing+dayTrade don't double-fetch; ~4 calls/pair/60s, well under limits.
+  The real cost is SERIAL CPU (two full SignalBot Node passes per pair).
+Levers, in impact order (user is deciding which to pull):
+1. **Gate the dayTrade merge** — loop.py:78 forces `merge_daytrade=True` for
+   every pair, but no enabled agent trades 15m/5m lanes (scalp15 off) -> skip
+   it per pair ≈ halves refresh (~9s/pair). Zero risk, instant.
+2. **Run pairs concurrently** (ThreadPoolExecutor in loop) — sweep ~72s ->
+   ~20s wall; same total network calls; small stagger to avoid 4 Node spawns
+   at once.
+3. **One sidecar process for swing+dayTrade** (signal.js) — spare a Node spawn;
+   the 30s in-process ohlcCache (dataFeed.js OHLC_TTL_MS) warm-starts both
+   passes -> ~13s/pair.
+4. **Then tighten cadence** — signal_max_age 120s for DOT (active pair),
+   ~300s for the rest; open positions already get 15s exit polling cheaply.
+Optional later: cheap Ticker prefilter (1 call, all pairs) — only run the deep
+SignalBot sweep when price actually moved. Nothing here is committed yet.
