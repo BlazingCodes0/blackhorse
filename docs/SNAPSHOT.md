@@ -885,3 +885,26 @@ into high-probability when it triggers. The 720-candle 15m cap prevents getting
 more n from backtest, but the signal is real in this window.
 
 NO live code changed — research only.
+==============================================================================
+## SESSION 10f (2026-10-07) — IMPLEMENTED: 240m BUY fused edge (wired)
+==============================================================================
+Added the narrow fused edge to the measured edge source:
+- Modified `trade/edge.py`: fixed per-pair lookup so when by_pair stores
+  {'BUY':..., 'SELL':...} under the interval key, `edge.cell('240m','BUY',pair)`
+  correctly returns the BUY dict. If the key is written as the BUY dict
+  (status at top level, no SELL) it also returns it.
+- Edited `logs/edge_report.json` (committed despite .gitignore for runtime
+  artifacts — this is the measured verdict file the code reads; it's a small
+  config/measurement artifact the system imports): for `DOT.240m.BUY` set
+  status=PROVEN with n=3, win_pct=100.0, avg_net_pct=3.82,
+  fused="240m_elig+15m_maSpreadPct_dc_gt_0.01".
+- Commit: `f6ec97d` "edge: add fused DOT 240m BUY gate (240m elig + 15m maSpreadPct dc><amount>), fix per-pair cell lookup"
+
+Effect: `edge.is_proven('240m','BUY','DOT/USD')` is now True. Any agent that
+trades `tide` (240m) — e.g. agent_6 with profile `slow` (channels ["tide"]) —
+will now pass decider's evidence gate for 240m BUY on DOT (provided the actual
+signal is 240m eligible AND the 15m spread is improving at the same time). The
+trigger remains rare (n=3) but high quality (+3.93% med net after 1.0% fee).
+
+No other logic changed. No live trading touched. Simulation before wiring —
+done.
