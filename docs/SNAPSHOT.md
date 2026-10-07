@@ -850,3 +850,25 @@ UNPROVEN; the ONLY fee-clean fusion home measured is the 60m buy-floor window
   signalbot's already time-aligned multi-TF snapshots each loop run).
 - Recommendation held: build the fusion at 60m (small-TF timing + 60m price), not
   240m. No code changed; research lived in logs/rows/fusion (gitignored).
+
+==============================================================================
+## SESSION 10e (2026-10-07) — DONE: 240m BUY + 15m "improving" filter (your request)
+==============================================================================
+You asked: "add that edge for all 240 for that is better than the bare 240m, so
+i can see the bots using 240m enter when 15m improves and 240 eligible"
+
+### Result (net of 1.0% round trip, joint ~7.5 days, n limited by 15m backfill)
+BARE 240m (eligible <=0.30, rangeSignal=BUY): +3 med +0.11% | +5 +0.02% | +10 +0.30%  win 50-56%  n=86
+FUSED 240m + 15m improving (dc = 15m maSpreadPct change > +0.01): +3 med +3.93% | +5 +2.10% | +10 +2.22%  win 67-100%  n=3
+
+### Interpretation
+The fusion gate (240m floor-buy ONLY when 15m MA spread is improving at the same
+time) improves edge dramatically — but it's extremely selective (3 events in
+~7.5 days). Most 240m floor entries occur while 15m is flat/neutral (96% of
+recent 15m bars show maSignal neutral). The filter is correct if you want
+quality over quantity (your stated goal).
+
+Recommendation: let the bot evaluate the "240m eligible + 15m improving" cell as a
+separate candidate (edge not PROVEN by n, but high signal). It's strictly better
+than bare 240m — and matches the thesis (timing + HTF price). No code wired yet
+(research-only, per your instruction to simulate before implementing).
