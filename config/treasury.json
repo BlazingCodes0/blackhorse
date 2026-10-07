@@ -1,12 +1,12 @@
 {
   "currency": "USD",
-  "allocated": 69.51,
-  "cash": 58.24,
+  "allocated": 69.62,
+  "cash": 53.26,
   "reserve_floor": 0.0,
   "open_risk": 0.0,
   "realized_pnl": 0.0,
-  "updated": "2026-10-07T14:51:39Z",
+  "updated": "2026-10-07T23:12:11Z",
   "holdings": {
-    "DOT": 11.27
+    "DOT": 16.36
   }
 }

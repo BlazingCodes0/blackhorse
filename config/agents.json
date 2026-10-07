@@ -97,7 +97,13 @@
       "enabled": true,
       "capital": 20.0,
       "mode": "LIVE",
-      "policy_overrides": {},
+      "policy_overrides": {
+        "min_reward_risk": 2.0,
+        "channels": [
+          "wave"
+        ],
+        "entry_order_type": "market"
+      },
       "created": "2026-10-07T11:48:07Z",
       "pairs": [
         "DOT/USD"
