@@ -908,3 +908,11 @@ trigger remains rare (n=3) but high quality (+3.93% med net after 1.0% fee).
 
 No other logic changed. No live trading touched. Simulation before wiring —
 done.
+ 
+### 2026-10-07 SESSION 10g — Strategy selector (swing/daytrade/custom), channels UX
+- Added Strategy dropdown to agent Settings (Where it trades): swing/daytrade/custom. Auto-fills channels on save: swing → ["ripple","wave","tide"] (15m/60m/240m); daytrade → ["wave15","ripple5","tide60"]; custom leaves channels editable.
+- Added strategy_swing / strategy_daytrade presets to trade/agents.PROFILES (non-destructive, profiles remain separate from "strategy" policy key).
+- UI loads: if strategy not stored, infers from current channels for display. Save stores strategy override and auto-writes channels for non-custom.
+- Rationale: channels = slot names (interval mapping). Strategy = interval combination per agent; making it explicit matches "per-agent strategy + interval combos". Decider still picks single best plan across allowed channels (consensus merge deferred).
+- Verification: py_compile clean. agent_6 example: strategy swing sets channels ripple,wave,tide.
+- Commits: 3367267 amended → 3d094d5. Snapshots v1.7 (edge/proven work), v1.8b (this UI).
