@@ -916,3 +916,5 @@ done.
 - Rationale: channels = slot names (interval mapping). Strategy = interval combination per agent; making it explicit matches "per-agent strategy + interval combos". Decider still picks single best plan across allowed channels (consensus merge deferred).
 - Verification: py_compile clean. agent_6 example: strategy swing sets channels ripple,wave,tide.
 - Commits: 3367267 amended → 3d094d5. Snapshots v1.7 (edge/proven work), v1.8b (this UI).
+
+> NOTE: After UI/backend code changes, restart GUI/trader (or relaunch process) for new code to take effect.
