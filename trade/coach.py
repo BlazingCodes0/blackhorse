@@ -187,7 +187,30 @@ def render_prompt(packet: dict) -> str:
     return "\n".join(lines)
 
 
+def _fmt_verdict(v):
+    """Human-readable brain verdict — no raw JSON dump."""
+    if not isinstance(v, dict):
+        return str(v)
+    if v.get("parse_error") or ("raw" in v and not v.get("bias")):
+        err = v.get("parse_error", "?")
+        raw = str(v.get("raw", ""))
+        short = raw[:120].replace("\n", " ")
+        return f"Brain reply unparsable: {err}\n\n{short}…"
+    if v.get("deferred"):
+        return f"Brain deferred: {v.get('reason')}"
+    lines = [
+        f"Bias {v.get('bias','?')} · Regime {v.get('regime','?')} · Confidence {int(round((v.get('confidence') or 0)*100))}%",
+        f"Risk {v.get('risk_level','?')} · Stance {v.get('stance','?')}",
+    ]
+    if v.get("notes"):
+        lines += ["", v["notes"]]
+    if v.get("watch"):
+        lines += ["", "Watch:"] + [f"  • {w}" for w in v["watch"]]
+    return "\n".join(lines)
+
+
 def parse_verdict(text: str) -> dict:
+    text = text.strip()
     if text.startswith("(brain offline"):
         return {"bias": "NEUTRAL", "regime": "UNCERTAIN", "confidence": 0.0,
                 "risk_level": "HIGH", "stance": "STAND_DOWN", "watch": [],
@@ -197,13 +220,19 @@ def parse_verdict(text: str) -> dict:
         return {"bias": "NEUTRAL", "regime": "UNCERTAIN", "confidence": 0.0,
                 "risk_level": "HIGH", "stance": "STAND_DOWN", "watch": [],
                 "notes": f"brain unavailable: {text[:200]}"}
+    # the CLI timeout/error string can echo the whole command line —
+    # treat it as unavailable instead of trying to JSON-slice through it
+    if "timed out after" in text[:80] or text.startswith("(brain error"):
+        return {"bias": "NEUTRAL", "regime": "UNCERTAIN", "confidence": 0.0,
+                "risk_level": "HIGH", "stance": "STAND_DOWN", "watch": [],
+                "notes": "brain unavailable: command timed out or errored"}
     start, end = text.find("{"), text.rfind("}") + 1
     if start < 0 or end <= start:
         return {"raw": text, "parse_error": "no JSON object found"}
     try:
         v = json.loads(text[start:end])
     except json.JSONDecodeError as e:
-        return {"raw": text, "parse_error": str(e)}
+        return {"raw": text[:500], "parse_error": str(e)}
     for k, allowed in VALID.items():
         if isinstance(v.get(k), str):
             v[k] = v[k].upper()
