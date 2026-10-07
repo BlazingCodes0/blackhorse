@@ -65,6 +65,19 @@ PROFILES = {
             "require_tide_context": False,
         },
     },
+    # Strategy presets (interval combinations by named strategy)
+    "strategy_swing": {
+        "label": "Strategy — swing",
+        "description": "Swing: 15m/60m/240m lanes (ripple,wave,tide). Multi-timeframe view.",
+        "kind": "trading",
+        "cfg": {"channels": ["ripple", "wave", "tide"]},
+    },
+    "strategy_daytrade": {
+        "label": "Strategy — daytrade",
+        "description": "DayTrade: adds 5m/15m/60m dayTrade lanes (wave15,ripple5,tide60).",
+        "kind": "trading",
+        "cfg": {"channels": ["wave15", "ripple5", "tide60"]},
+    },
     "scalp15": {
         "label": "Scalper 15m — 15m real edge from dayTrade wave",
         "description": "Uses the dayTrade-composed 15m wave lane. Trades early, small, from 15m range/floor/roof data; same Heart/spot-only chain.",

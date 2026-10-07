@@ -136,6 +136,7 @@ SETTINGS = [
     ]),
     ("Where it trades", [
         ("pairs", "Pairs", "list", "agent", "Comma list, e.g. DOT/USD,ETH/USD. Empty = every pair."),
+        ("strategy", "Strategy", "combo:swing,daytrade,custom", "policy", "Auto-set channels by strategy; custom = edit channels freely."),
         ("channels", "Channels", "list", "policy", "ripple=15m, wave=60m, tide=240m, wave15, ripple5, tide60"),
         ("capital", "Capital $", "float", "agent", "Budget this agent may size from (bounded by real free cash)."),
     ]),
@@ -540,7 +541,17 @@ class AgentsMixin:
                 lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 if kind.startswith("combo:"):
                     w = QComboBox()
-                    w.addItems(kind.split(":")[1].split(","))
+                    items = kind.split(":")[1].split(",")
+                    w.addItems(items)
+                    # detect current strategy from channels if strategy not set
+                    if key == "strategy" and (cur is None or str(cur) not in items):
+                        ch = pol.get("channels") or []
+                        if ch == ["ripple","wave","tide"]:
+                            cur = "swing"
+                        elif ch == ["wave15","ripple5","tide60"]:
+                            cur = "daytrade"
+                        else:
+                            cur = "custom"
                     w.setCurrentText(str(cur or w.itemText(0)))
                 elif kind == "bool":
                     w = QCheckBox(label)
@@ -583,6 +594,14 @@ class AgentsMixin:
     def _save_agent_settings(self, aid):
         agents, _ = self._agents_mod()
         changed, errs = [], []
+        # get strategy choice if present
+        strat = None
+        if "strategy" in self._agent_fields:
+            try:
+                sw, sk, swher, sold = self._agent_fields["strategy"]
+                strat = (sw.currentText() if hasattr(sw, 'currentText') else str(sold)).strip().lower()
+            except Exception:
+                strat = None
         for key, (w, kind, where, old) in self._agent_fields.items():
             try:
                 if kind == "bool":
@@ -605,6 +624,25 @@ class AgentsMixin:
                         val = int(float(raw)); same = old is not None and int(float(old)) == val
                     else:
                         val = raw; same = str(old) == val
+                # strategy is metadata; we may also auto-set channels if custom not intended
+                if key == "strategy":
+                    if same and strat != "custom":
+                        pass  # still maybe enforce channels for known strategies
+                    # store strategy as policy override for visibility
+                    try:
+                        agents.set_override(aid, key, strat or val)
+                    except Exception:
+                        pass
+                    changed.append(key) if not same else None
+                    # auto-set channels for non-custom
+                    if strat == "swing":
+                        agents.set_override(aid, "channels", ["ripple","wave","tide"])
+                        changed.append("channels")
+                    elif strat == "daytrade":
+                        agents.set_override(aid, "channels", ["wave15","ripple5","tide60"])
+                        changed.append("channels")
+                    # custom: do not overwrite channels
+                    continue
                 if same:
                     continue
                 if key == "pairs":
@@ -619,10 +657,10 @@ class AgentsMixin:
         if errs:
             self.ag_save_msg.setText(f"<span style='color:{RED}'>error — {'; '.join(errs)}</span>")
         else:
-            self.ag_save_msg.setText(f"<span style='color:{GREEN}'>saved {', '.join(changed) or 'nothing changed'}</span>")
+            self.ag_save_msg.setText(f"<span style='color:{GREEN}'>saved {', '.join(set(changed)) or 'nothing changed'}</span>")
         if changed:
             self.refresh_agents()
-            self.ag_save_msg.setText(f"<span style='color:{GREEN}'>saved {', '.join(changed)}</span>")
+            self.ag_save_msg.setText(f"<span style='color:{GREEN}'>saved {', '.join(set(changed))}</span>")
 
     # ---------------------------------------------------------------- orders tab
     def _tick_agent_orders(self):
