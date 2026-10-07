@@ -20,7 +20,7 @@ CLI:
   python3 trade/decider.py            # decide from latest signal + brain + treasury
   python3 trade/decider.py --explain  # human-readable reasoning
 """
-import json, sys, argparse
+import json, math, sys, argparse
 from pathlib import Path
 
 BH = Path.home() / "blackhorse"
@@ -101,7 +101,11 @@ def _last_verdict():
         lines = BRAIN_LOG.read_text(errors="ignore").splitlines()
         for l in reversed(lines):
             if l.strip():
-                return json.loads(l).get("verdict")
+                rec = json.loads(l)
+                import time as _t
+                if _t.time() - float(rec.get("ts") or 0) > 1800:
+                    return None            # stale verdict (>30 min) is not a veto
+                return rec.get("verdict")
     except (OSError, json.JSONDecodeError):
         pass
     return None
@@ -116,7 +120,9 @@ def _treasury():
 
 
 def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair=None) -> dict:
-    signal = signal or _load(SIGNAL, {"available": False})
+    if not signal:
+        import signals
+        signal = (signals.load(pair) if pair else _load(SIGNAL, {})) or {"available": False}
     verdict = verdict or _last_verdict()
     treasury = treasury if treasury is not None else _treasury()
     cfg = cfg or _cfg()
@@ -138,10 +144,23 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
     if not available or available <= 0:
         return _hold("no spendable capital (available <= 0)", reasons)
 
+    # OWNER OVERRIDE (mtf_buy_override): 60m range signal = BUY AND the 15m lane is
+    # entry-eligible -> BUY may fire even if the measured edge is not PROVEN.
+    buy_override = False
+    if cfg.get("mtf_buy_override", False):
+        def _lane(iv):
+            for _n, _c in ch.items():
+                if str(_c.get("interval")) == iv:
+                    yield _c
+        r60 = any(str(c.get("rangeSignal") or "").upper() == "BUY" for c in _lane("60m"))
+        e15 = any(bool(c.get("entryEligible")) for c in _lane("15m"))
+        buy_override = r60 and e15
+        reasons.append(f"mtf_buy_override: 60m range BUY={r60}, 15m entry-eligible={e15} -> "
+                       f"{'ACTIVE (proven-edge check skipped for BUY)' if buy_override else 'inactive'}")
     # --- brain stance gate ---
     stance = (verdict or {}).get("stance")
     risk = (verdict or {}).get("risk_level")
-    if stance == "STAND_DOWN":
+    if stance == "STAND_DOWN" and not buy_override:
         reasons.append("brain says STAND_DOWN")
         return _hold("brain stand-down", reasons)
     if risk == "EXTREME":
@@ -153,6 +172,7 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
     # SPREAD TRUTH (owner rule): trust ONLY the 15m spread read. Other timeframes
     # are noise or too slow. Find the 15m lane regardless of which channel we trade.
     shared15 = _shared_15m(ch)
+    cfg_buy = dict(cfg, require_proven_edge=False) if buy_override else cfg
     plans = []
     for name, c in (("ripple", ripple), ("wave", wave), ("tide", tide)):
         if allowed and name not in allowed:
@@ -165,7 +185,7 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
         direction = c.get("strengthDirection")
         # BUY
         if s <= cfg["entry_strength_max"] and not _missing(adv.get("buy")):
-            plans.append(_build(name, c, "BUY", buy, s, direction, available, cfg, reasons, _edge, pair, shared15))
+            plans.append(_build(name, c, "BUY", buy, s, direction, available, cfg_buy, reasons, _edge, pair, shared15))
         # SELL (only if we can actually sell — advisor sell present)
         if s >= cfg["exit_strength_min"] and not _missing(adv.get("sell")):
             # SPOT-ONLY: cannot sell what we do not hold.
@@ -209,7 +229,10 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
     return {
         "action": best["side"], "channel": best["channel"], "regime": (verdict or {}).get("regime"),
         "entry": round(best["entry"], 8), "stop": round(best["stop"], 8),
-        "target": round(best["target"], 8), "size_quote": round(best["size_quote"], 2),
+        "target": round(best["target"], 8), "size_quote": best["size_quote"],
+        "order_type": best.get("order_type", "market"), "expiry_s": best.get("expiry_s"),
+        "outlay_quote": best.get("outlay_quote"), "fee_reserve_pct": best.get("fee_reserve_pct"),
+        "fee_entry_pct": best.get("fee_entry_pct"), "fee_exit_pct": best.get("fee_exit_pct"),
         "risk_quote": round(best["risk_quote"], 2), "rr": round(best["rr"], 2),
         "score": round(best["score"], 4),
         "edge": best.get("edge"),
@@ -269,7 +292,10 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
         shared15 = _shared_15m({"15m": c})     # fall back if this channel IS 15m
     change = (shared15 or {}).get("change")
     eps = float(cfg.get("spread_flat_epsilon", 0.02))   # "flat" band
-    if change is not None:
+    spread_gate = cfg.get("require_spread_agreement", True)
+    if not spread_gate:
+        pass                                  # owner: 15m spread no longer blocks entries
+    elif change is not None:
         change = float(change)
         if side == "BUY" and change < -eps:
             return None                       # 15m spread genuinely against a long
@@ -329,7 +355,19 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
         return None
     rr = abs(target - entry) / abs(entry - stop) if abs(entry - stop) > 0 else 0
     # fee-aware: net target gain must clear round-trip fees
-    fee_frac = cfg["fee_pct_per_side"] / 100 * 2
+    # REAL base-tier fees from the exchange (maker for a resting limit entry, taker for
+    # the market exit). Reserve for the entry uses TAKER (worst case if the limit crosses).
+    try:
+        import fees as _fees
+        _mk, _tk = _fees.rates(pair or "DOT/USD")
+        _entry_type = (cfg.get("entry_order_type", "limit") if side == "BUY" else "market")
+        fee_entry_frac = _mk if _entry_type == "limit" else _tk
+        fee_exit_frac = _tk
+        fee_reserve = _tk
+    except Exception:
+        _entry_type = "market"
+        fee_entry_frac = fee_exit_frac = fee_reserve = cfg["fee_pct_per_side"] / 100
+    fee_frac = fee_entry_frac + fee_exit_frac
     slip_frac = cfg.get("slippage_pct_per_side", 0.1) / 100 * 2
     gross_move = abs(target - entry) / entry
     if gross_move <= fee_frac:
@@ -338,8 +376,11 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
     # round-trip fees + slippage. This is the "beauty" number the owner sees.
     expected_net_pct = round(gross_move * 100 - fee_frac * 100 - slip_frac * 100, 3)
     risk_quote = available * (cfg["risk_per_trade_pct"] / 100)
-    size_quote = risk_quote / (stop_pct / 100)
-    size_quote = min(size_quote, available * (cfg["max_position_pct"] / 100))
+    # size so that NOTIONAL + entry fee never exceeds the budget; loss-at-stop includes round-trip fees
+    size_quote = risk_quote / (stop_pct / 100 + fee_frac)
+    size_quote = min(size_quote, available * (cfg["max_position_pct"] / 100) / (1 + fee_reserve))
+    size_quote = min(size_quote, available / (1 + fee_reserve))
+    size_quote = math.floor(size_quote * 100) / 100          # round DOWN to the cent, never up
     score = (1 - strength) if side == "BUY" else strength
     if direction == "rising" and side == "BUY":
         score += 0.1
@@ -367,7 +408,11 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
          "15m MA cross: no read available"),
     ]
     return {"channel": channel, "side": side, "entry": entry, "stop": stop, "target": target,
-            "size_quote": size_quote, "risk_quote": risk_quote, "rr": rr, "score": score,
+            "size_quote": size_quote, "risk_quote": risk_quote,
+            "order_type": _entry_type, "expiry_s": int(cfg.get("entry_expiry_seconds", 600)),
+            "fee_reserve_pct": round(fee_reserve * 100, 3),
+            "outlay_quote": round(size_quote * (1 + fee_reserve), 4),
+            "fee_entry_pct": round(fee_entry_frac * 100, 3), "fee_exit_pct": round(fee_exit_frac * 100, 3), "rr": rr, "score": score,
             "expected_net_pct": expected_net_pct,
             "fees_roundtrip_pct": round(fee_frac * 100, 3),
             "edge": {"interval": interval, "side": side, "status": edge_status,

@@ -102,11 +102,21 @@ CREATE INDEX IF NOT EXISTS idx_dec_ts ON decisions(ts);
 def init() -> dict:
     con = connect()
     con.executescript(SCHEMA)
-    for col in ("interval", "edge_cell"):
+    for tbl, col, typ in (
+            ("positions", "interval", "TEXT"), ("positions", "edge_cell", "TEXT"),
+            ("positions", "mode", "TEXT"), ("positions", "fee_entry", "REAL"),
+            ("positions", "fee_exit", "REAL"), ("positions", "entry_txid", "TEXT"),
+            ("positions", "exit_txid", "TEXT"), ("positions", "entry_snapshot", "TEXT"),
+            ("positions", "net", "REAL"),
+            ("orders", "expires", "REAL"), ("orders", "snapshot", "TEXT"),
+            ("orders", "vol_exec", "REAL"), ("orders", "avg_price", "REAL"),
+            ("orders", "fee", "REAL"), ("orders", "outlay", "REAL")):
         try:
-            con.execute(f"ALTER TABLE positions ADD COLUMN {col} TEXT")
+            con.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {typ}")
         except Exception:
             pass
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_fill_ex ON fills(exchange_fill_id) "
+                "WHERE exchange_fill_id IS NOT NULL")
     con.commit()
     return {"db": str(DB), "ok": True}
 
@@ -183,9 +193,13 @@ def open_position(pos_id, agent, pair, side, entry, qty, stop=None, target=None,
                   mode="PAPER", reason=None, interval=None, edge_cell=None) -> dict:
     init()
     con = connect()
-    con.execute("INSERT OR REPLACE INTO positions(id, opened, agent, pair, side, entry, qty, "
-                "stop, target, status, interval, edge_cell) VALUES(?,?,?,?,?,?,?,?,?,'OPEN',?,?)",
-                (pos_id, _now(), agent, pair, side, entry, qty, stop, target, interval, edge_cell))
+    con.execute("INSERT INTO positions(id, opened, agent, pair, side, entry, qty, "
+                "stop, target, status, interval, edge_cell, mode) VALUES(?,?,?,?,?,?,?,?,?,'OPEN',?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET agent=excluded.agent, pair=excluded.pair, "
+                "side=excluded.side, entry=excluded.entry, qty=excluded.qty, stop=excluded.stop, "
+                "target=excluded.target, interval=COALESCE(excluded.interval, interval), "
+                "edge_cell=COALESCE(excluded.edge_cell, edge_cell), mode=COALESCE(excluded.mode, mode)",
+                (pos_id, _now(), agent, pair, side, entry, qty, stop, target, interval, edge_cell, mode))
     con.commit()
     return True
 
@@ -262,6 +276,179 @@ def stats() -> dict:
     return out
 
 
+# ---- LIVE mirror: the exchange truth lands here ------------------------------
+
+def live_order(txid, agent, pair, side, order_type, price, volume, outlay=None,
+               expires=None, plan=None, snapshot=None, status="OPEN") -> bool:
+    """Record a REAL exchange order the moment it is accepted. Idempotent on txid."""
+    init()
+    con = connect()
+    con.execute(
+        "INSERT OR IGNORE INTO orders(client_order_id, created, updated, venue, pair, side, order_type, "
+        "price, amount_base, amount_quote, status, exchange_order_id, agent, source, mode, reason, "
+        "expires, snapshot, outlay, raw) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("kr_" + str(txid), _now(), _now(), _active_venue() or "kraken", pair, side, order_type,
+         price, volume, (price or 0) * volume if price else None, status, txid, agent,
+         "agent:" + str(agent), "LIVE", (plan or {}).get("reason"), expires,
+         json.dumps(snapshot) if snapshot else None, outlay,
+         json.dumps({k: v for k, v in (plan or {}).items() if k in
+                     ("channel", "entry", "stop", "target", "size_quote", "outlay_quote",
+                      "order_type", "expiry_s", "rr", "evidence")}, default=str)))
+    con.commit()
+    return True
+
+
+def live_order_result(txid, status, vol_exec=0.0, avg_price=None, fee=0.0) -> bool:
+    """Exchange outcome for an order: FILLED | PARTIAL | EXPIRED | CANCELED | OPEN."""
+    init()
+    con = connect()
+    con.execute("UPDATE orders SET status=?, updated=?, vol_exec=?, avg_price=?, fee=? "
+                "WHERE client_order_id=?",
+                (status, _now(), vol_exec, avg_price, fee, "kr_" + str(txid)))
+    if vol_exec and vol_exec > 0:
+        row = con.execute("SELECT id, pair FROM orders WHERE client_order_id=?", ("kr_" + str(txid),)).fetchone()
+        if row:
+            con.execute("INSERT OR REPLACE INTO fills(order_id, ts, price, amount, fee, fee_currency, "
+                        "exchange_fill_id) VALUES(?,?,?,?,?,?,?)",
+                        (row["id"], _now(), avg_price, vol_exec, fee, "USD", "ord:" + str(txid)))
+    con.commit()
+    return True
+
+
+def position_open(pos: dict) -> bool:
+    """Mirror a portfolio position (full fidelity incl. entry snapshot + real fee)."""
+    import re
+    init()
+    m = re.search(r"\b([A-Z0-9]{5,6}-[A-Z0-9]{5}-[A-Z0-9]{6})\b", str(pos.get("note") or ""))
+    con = connect()
+    con.execute(
+        "INSERT INTO positions(id, opened, agent, pair, side, entry, qty, stop, target, status, "
+        "interval, edge_cell, mode, fee_entry, entry_txid, entry_snapshot) "
+        "VALUES(?,?,?,?,?,?,?,?,?,'OPEN',?,?,?,?,?,?) "
+        "ON CONFLICT(id) DO UPDATE SET entry=excluded.entry, qty=excluded.qty, "
+        "fee_entry=excluded.fee_entry, entry_snapshot=COALESCE(excluded.entry_snapshot, entry_snapshot), "
+        "entry_txid=COALESCE(excluded.entry_txid, entry_txid)",
+        (pos["id"], pos.get("opened"), pos.get("agent"), pos.get("pair"), pos.get("side"),
+         pos.get("entry"), pos.get("qty"), pos.get("stop"), pos.get("target"),
+         pos.get("interval"), pos.get("edge_cell"), pos.get("mode"), pos.get("fee_entry"),
+         m.group(1) if m else None,
+         json.dumps(pos["entry_snapshot"]) if pos.get("entry_snapshot") else None))
+    con.commit()
+    return True
+
+
+def position_close(pos_id, exit_price, net, fees_total, fee_exit, reason, exit_txid=None) -> bool:
+    init()
+    con = connect()
+    con.execute("UPDATE positions SET closed=?, exit=?, status='CLOSED', realized_pnl=?, net=?, fees=?, "
+                "fee_exit=?, reason=?, exit_txid=COALESCE(?, exit_txid) WHERE id=?",
+                (_now(), exit_price, net, net, fees_total, fee_exit, reason, exit_txid, pos_id))
+    con.commit()
+    return True
+
+
+def update_position_snapshot(pos_id, snapshot) -> bool:
+    con = connect()
+    con.execute("UPDATE positions SET entry_snapshot=? WHERE id=?", (json.dumps(snapshot), pos_id))
+    con.commit()
+    return True
+
+
+def verify_against_portfolio() -> dict:
+    """The DB and logs/portfolio.json must agree on what is open."""
+    try:
+        import portfolio
+        js = {p["id"] for p in portfolio.open_positions()}
+    except Exception as e:
+        return {"ok": None, "error": str(e)}
+    db = {p["id"] for p in open_positions()}
+    return {"ok": js == db, "only_in_json": sorted(js - db), "only_in_db": sorted(db - js)}
+
+
+def report() -> dict:
+    init()
+    con = connect()
+    q = lambda sql: [dict(r) for r in con.execute(sql).fetchall()]
+    return {"stats": stats(),
+            "orders": q("SELECT id, datetime(created,'unixepoch') t, pair, side, order_type, price, "
+                        "amount_base vol, vol_exec, avg_price, fee, status, agent, exchange_order_id "
+                        "FROM orders ORDER BY created DESC LIMIT 10"),
+            "positions": q("SELECT id, status, agent, pair, entry, qty, fee_entry, exit, net, mode, "
+                           "entry_txid, exit_txid, reason, entry_snapshot IS NOT NULL has_snapshot "
+                           "FROM positions ORDER BY opened DESC LIMIT 10")}
+
+
+def backfill_from_kraken(since_ts: float = 1791072000) -> dict:
+    """Pull REAL fills from Kraken TradesHistory into orders+fills (idempotent), and
+    mirror portfolio.json / trades.jsonl positions. Read-only on the exchange."""
+    import execute, portfolio
+    init()
+    t = execute._kraken_private("/0/private/TradesHistory", {"nonce": str(int(time.time() * 1000))})
+    trades = (t.get("result") or {}).get("trades") or {}
+    by_order = {}
+    for tid, v in trades.items():
+        if v["time"] < since_ts or v["pair"].startswith("ZUSD") or v["pair"].endswith("ZCAD"):
+            continue
+        by_order.setdefault(v["ordertxid"], []).append(v)
+    n = 0
+    for otx, vs in by_order.items():
+        vol = sum(float(x["vol"]) for x in vs); cost = sum(float(x["cost"]) for x in vs)
+        fee = sum(float(x["fee"]) for x in vs); avg = cost / vol if vol else None
+        pair = vs[0]["pair"]; pair = pair[:-3] + "/USD" if pair.endswith("USD") else pair
+        live_order(otx, None, pair, vs[0]["type"], vs[0]["ordertype"], avg, vol, status="FILLED")
+        live_order_result(otx, "FILLED", vol, avg, fee)
+        con = connect()
+        con.execute("UPDATE orders SET created=?, source='backfill:kraken' WHERE client_order_id=?",
+                    (min(float(x["time"]) for x in vs), "kr_" + otx))
+        con.commit(); n += 1
+    pos_n = 0
+    for p in portfolio.open_positions():
+        position_open(p); pos_n += 1
+    try:
+        for line in (BH / "logs" / "trades.jsonl").read_text().splitlines():
+            r = json.loads(line)
+            if r.get("type") == "open" and r["position"]["id"] not in {p["id"] for p in portfolio.open_positions()}:
+                position_open(r["position"]); pos_n += 1
+            elif r.get("type") == "close":
+                position_close(r["position_id"], r.get("exit"), r.get("net"), r.get("fees"), None,
+                               r.get("reason"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"orders_backfilled": n, "positions_mirrored": pos_n}
+
+
+def record_decision_changed(source, action, pair=None, agent=None, min_gap_s=3600, **kw):
+    """Decision log WITHOUT the noise. BUY/SELL always recorded. HOLD/SKIP only when the
+    action or the reason (digits ignored) changed since this agent's last row for the pair,
+    or at most once per min_gap_s as a heartbeat. Keeps the table small."""
+    import re
+    init()
+    con = connect()
+    reason = kw.get("reason")
+    if action not in ("BUY", "SELL"):
+        last = con.execute("SELECT ts, action, reason FROM decisions WHERE source=? AND agent IS ? AND pair IS ? "
+                           "ORDER BY ts DESC LIMIT 1", (source, agent, pair)).fetchone()
+        norm = lambda r: re.sub(r"[0-9.$%]+", "#", str(r or ""))
+        if last and last["action"] == action and norm(last["reason"]) == norm(reason) \
+                and _now() - last["ts"] < min_gap_s:
+            return None
+    return record_decision(source, action, pair=pair, agent=agent, **kw)
+
+
+def prune(hold_days: int = 14) -> dict:
+    """Drop old HOLD/SKIP decisions + old heart ALLOW rows. BUY/SELL decisions, orders,
+    fills and positions are NEVER deleted (audit trail)."""
+    init()
+    con = connect()
+    cut = _now() - hold_days * 86400
+    a = con.execute("DELETE FROM decisions WHERE ts<? AND action NOT IN ('BUY','SELL')", (cut,)).rowcount
+    b = con.execute("DELETE FROM heart_verdicts WHERE ts<? AND decision='ALLOW' AND action NOT IN ('BUY','SELL')",
+                    (cut,)).rowcount
+    con.commit()
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return {"decisions_pruned": a, "heart_pruned": b}
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "stats"
     if cmd == "init":
@@ -270,5 +457,13 @@ if __name__ == "__main__":
         print(json.dumps(open_orders(), indent=2))
     elif cmd == "positions":
         print(json.dumps(open_positions(), indent=2))
+    elif cmd == "prune":
+        print(json.dumps(prune(), indent=2))
+    elif cmd == "report":
+        print(json.dumps(report(), indent=2, default=str))
+    elif cmd == "backfill":
+        print(json.dumps(backfill_from_kraken(), indent=2))
+    elif cmd == "verify":
+        print(json.dumps(verify_against_portfolio(), indent=2))
     else:
         print(json.dumps(stats(), indent=2))

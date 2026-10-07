@@ -632,3 +632,66 @@ d8e5189 shared signals: MA20/MA50 cross ALSO comes from 15m only (owner rule)
   satisfy its staleness gate.
 - Loop: heartbeat + observer + execute.mark every wake; SignalBot refresh only
   when bot file older than signal_max_age (default 600s, not a CLI flag yet).
+
+================================================================================
+## SESSION 9 (2026-10-07) — IN FLIGHT: multi-pair repair (NOT committed) — RESUME HERE
+================================================================================
+The owner was mid-way through making the whole trade path per-pair when this
+chat started. NOTHING in this section is committed — `git status` is the truth,
+not this file. Treat the worktree as a snapshot of unfinished work.
+
+What the uncommitted diff contains (16 modified + 5 new files, ~905 insertions):
+- trade/loop.py — `sweep()` now walks the WHOLE watchlist: `for pair in pairs`
+  -> per-pair signal -> decide -> act, recorded as `rec["per_pair"]`; the
+  primary pair is kept for GUI/back-compat, decision = first BUY/SELL found.
+- trade/signals.py (NEW) — ONE signal snapshot PER PAIR at
+  `logs/signals/<PAIR>.json`. `logs/signal_latest.json` = bot-only primary pair
+  (age-gated by signal_max_age=600s); manual runs write `signal_preview.json`.
+- trade/exits.py (NEW) — `take_snapshot()` at entry (stored with the position)
+  + profit-checked exits. NO stops (owner rule): a SELL only fires at a net
+  profit after real fees.
+- trade/fees.py + config/exchange_fees.json (NEW) — per-pair maker/taker and
+  order minimums; decider computes `expected_net_pct` = target − fees −
+  slippage when the BUY plan is created and cites it as evidence.
+- trade/execute.py / store.py / portfolio.py — positions carry pair, interval,
+  entry_snapshot, fee_entry through SQLite (store.prune, verify_against_portfolio
+  also new); live SELL still balance-checked -> spot-only, never a naked short.
+- trade/decider.py / broker.py / order_rules.py / capital.py / observer.py —
+  pair threaded through sizing, gates, and the pair-scope guard (an agent only
+  trades pairs listed in its `pairs`).
+- app/main.py −224 lines: the agents page moved OUT into new `app/agents_ui.py`.
+- config/agents.json — agent_2/agent_4/agent_5 disabled, capital 0; new
+  agent_6 "Slow 6" (slow profile, $20, DOT/USD) enabled.
+
+HONEST STATE: this diff has NO recorded verification. Verified only so far:
+`python3 -m py_compile trade/*.py app/*.py` passes (session 9).
+BEFORE building further on it, in order:
+  1. `python3 trade/loop.py --once` and read `rec["per_pair"]` — every
+     watchlist pair must get its own signal/decision, not just DOT/USD.
+  2. Confirm one paper fill end-to-end on a non-primary pair (ETH/USD) and that
+     its entry_snapshot + fee_entry land in the DB.
+  3. Confirm exits.manage() watches positions by their OWN pair's signal file.
+  4. Then commit as ONE commit ("multi-pair repair") so the worktree is clean.
+
+### Session 9, done in this chat — agents: switchable profile (landed, uncommitted)
+Problem: the profile was chosen only at CREATE time; to change it you had to
+edit config/agents.json by hand, and old `policy_overrides` silently kept
+shadowing the new profile key-by-key (a switch that doesn't switch).
+- trade/agents.py: `set_profile(id, profile, reset_overrides=False)` (validates
+  kind+profile), `shadowed_keys(id, profile)` -> [(key, mine, profile's)],
+  CLI `python3 trade/agents.py profile agent_1 quick [--reset]`.
+- app/agents_ui.py: new **Profile** group at the top of each agent's Settings
+  tab — profile combo + description, live "⚠ kept overrides that would shadow
+  this profile" warning, "Reset tuned values to this profile's defaults"
+  checkbox (untick to keep your tuning), **Switch profile** button. Applies on
+  the agent's next cycle; non-trading kinds are shown disabled.
+- SAFETY → now USER-CONTROLLED per agent: `require_proven_edge` is a labeled
+  checkbox ("Require edge proof to trade", first group in the Settings tab and
+  mirrored on the Overview), saved per agent via the normal Save button.
+  Default **OFF** for all agents and for every new agent at creation (decider.json
+  fallback = false; agent_5's old true override removed). Removed the hidden
+  copies from the profile layer (scalp15/lifecycle cfg) so a profile switch or
+  reset can never silently flip it.
+- Verified: py_compile clean; set_profile/reset/shadow round-trip on a temp
+  registry (kept overrides, reset to `{}`, policy_for picked up the new profile);
+  CLI round-trip on agent_1/agent_6 (no state change).

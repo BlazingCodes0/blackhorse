@@ -26,9 +26,11 @@ def _treasury_available() -> float:
         import execute
         if execute._mode() == "LIVE":
             bal = execute.kraken_balance()
+            if not bal:
+                raise RuntimeError("balance read failed")   # fall back to the reconciled treasury, not $0
             cash = sum(float(v) for k, v in bal.items()
                        if k in ("USD", "USDT", "USDC", "EUR", "CAD", "GBP", "ZUSD"))
-            return round(cash, 8)
+            return round(max(0.0, cash - execute.pending_outlay()), 8)
     except Exception:
         pass
     try:
@@ -64,9 +66,40 @@ def free() -> float:
     return max(0.0, round(_treasury_available() - committed(), 8))
 
 
+def _pending_file():
+    try:
+        return json.loads((BH / "logs" / "pending_orders.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def deployed(agent_id: str = None) -> float:
+    """Cash an agent (or all agents) already has working: open BUY cost basis (entry
+    + the real entry fee) plus resting limit orders (incl. reserved fee)."""
+    total = 0.0
+    try:
+        import portfolio
+        for p in portfolio.open_positions():
+            if str(p.get("side")).upper() == "BUY" and (agent_id is None or p.get("agent") == agent_id):
+                total += float(p.get("entry") or 0) * float(p.get("qty") or 0) + float(p.get("fee_entry") or 0)
+    except Exception:
+        pass
+    for o in _pending_file():
+        if agent_id is None or o.get("agent") == agent_id:
+            total += float(o.get("outlay") or 0)
+    return round(total, 8)
+
+
 def agent_available(agent_id: str, agent_capital: float) -> float:
-    """What THIS agent may size: its own cap, bounded by the shared free pool."""
-    return max(0.0, round(min(float(agent_capital), free()), 8))
+    """What THIS agent may size NOW: its capital MINUS what it already has deployed,
+    bounded by the shared free cash. Capital is a total budget, not a per-trade refill."""
+    left = float(agent_capital) - deployed(agent_id)
+    return max(0.0, round(min(left, free()), 8))
+
+
+def equity() -> float:
+    """Everything that exists: free cash + cash already deployed at cost."""
+    return round(free() + deployed(), 8)
 
 
 def status() -> dict:

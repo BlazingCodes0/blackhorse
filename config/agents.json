@@ -6,7 +6,7 @@
       "kind": "trading",
       "profile": "lifecycle",
       "enabled": true,
-      "capital": 38.0,
+      "capital": 35.0,
       "policy_overrides": {
         "entry_strength_max": 0.3,
         "exit_strength_min": 0.7,
@@ -22,8 +22,7 @@
       "created": "2026-10-04T15:53:25Z",
       "mode": "LIVE",
       "pairs": [
-        "BTC/USD",
-        "ETH/USD"
+        "DOT/USD"
       ]
     },
     "agent_2": {
@@ -31,8 +30,8 @@
       "name": "LiveTest30",
       "kind": "trading",
       "profile": "quick",
-      "enabled": true,
-      "capital": 10.0,
+      "enabled": false,
+      "capital": 0.0,
       "policy_overrides": {
         "entry_strength_max": 0.3,
         "exit_strength_min": 0.7,
@@ -54,8 +53,8 @@
       "name": "Scalper",
       "kind": "trading",
       "profile": "quick",
-      "enabled": true,
-      "capital": 10.0,
+      "enabled": false,
+      "capital": 0.0,
       "policy_overrides": {
         "channels": [
           "ripple",
@@ -79,17 +78,31 @@
       "name": "Scalper15",
       "kind": "trading",
       "profile": "scalp15",
-      "enabled": true,
-      "capital": 10,
+      "enabled": false,
+      "capital": 0.0,
       "mode": "LIVE",
       "policy_overrides": {
-        "require_proven_edge": true
+        "require_proven_edge": false
       },
       "created": "2026-10-05T19:18:50Z",
       "pairs": [
         "DOT/USD"
       ]
+    },
+    "agent_6": {
+      "id": "agent_6",
+      "name": "Slow 6",
+      "kind": "trading",
+      "profile": "slow",
+      "enabled": true,
+      "capital": 20.0,
+      "mode": "LIVE",
+      "policy_overrides": {},
+      "created": "2026-10-07T11:48:07Z",
+      "pairs": [
+        "DOT/USD"
+      ]
     }
   },
-  "next_id": 6
+  "next_id": 7
 }

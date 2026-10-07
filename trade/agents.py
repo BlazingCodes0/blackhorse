@@ -17,6 +17,7 @@ CLI:
   python3 trade/agents.py create --kind trading --profile slow --capital 50
   python3 trade/agents.py enable agent_1 | disable agent_1
   python3 trade/agents.py capital agent_1 75
+  python3 trade/agents.py profile agent_1 lifecycle [--reset]
   python3 trade/agents.py policy agent_1     # the effective decider policy
 """
 import json, sys, time, argparse, secrets as _secrets
@@ -78,7 +79,6 @@ PROFILES = {
             "risk_per_trade_pct": 2.0,
             "max_position_pct": 15.0,
             "require_tide_context": False,
-            "require_proven_edge": False,
             "spot_only": True,
         },
     },
@@ -100,7 +100,6 @@ PROFILES = {
             "risk_per_trade_pct": 2.0,
             "max_position_pct": 30.0,
             "require_tide_context": False,
-            "require_proven_edge": True,            # only proven cells (60m now)
             "spot_only": True,                       # exits only, never a short
         },
     },
@@ -149,6 +148,7 @@ def _summary(a: dict) -> dict:
     return {"id": a["id"], "name": a.get("name"), "kind": a.get("kind"),
             "profile": a.get("profile"), "enabled": a.get("enabled", False),
             "capital": a.get("capital", 0), "created": a.get("created"),
+            "pairs": a.get("pairs"), "mode": a.get("mode"),
             "profile_label": PROFILES.get(a.get("profile"), {}).get("label")}
 
 
@@ -166,7 +166,15 @@ def _total_allocated(exclude: str = None) -> float:
 
 
 def _available_capital() -> float:
-    """Real spendable capital: the exchange truth in LIVE, else treasury."""
+    """Capital that exists to be allocated: the exchange truth (free cash + cash already
+    deployed in positions/orders), else treasury."""
+    try:
+        import capital
+        eq = capital.equity()
+        if eq > 0:
+            return eq
+    except Exception:
+        pass
     try:
         import treasury
         return float(treasury.status().get("available", 0))
@@ -240,13 +248,58 @@ def set_capital(agent_id: str, amount: float, allow_over: bool = False) -> dict:
     return _summary(a)
 
 
+def _pair_price(pair: str):
+    try:
+        import signals
+        sig = signals.load(pair)
+        for c in (sig.get("channels") or {}).values():
+            if c.get("currPrice"):
+                return float(c["currPrice"])
+    except Exception:
+        pass
+    try:
+        import execute
+        return execute.kraken_last_price(pair)
+    except Exception:
+        return None
+
+
 def audited() -> dict:
-    """Truth check: how much real capital vs what agents claim."""
-    avail = _available_capital()
-    claimed = _total_allocated()
-    return {"available": round(avail, 2), "agents_claim": round(claimed, 2),
-            "over_allocated": claimed > avail + 1e-9,
-            "overshoot": round(max(0.0, claimed - avail), 2)}
+    """Truth check. Capital is each agent's TOTAL budget; what it has deployed counts
+    against it. Over-allocated only if budgets can't all be funded from what exists."""
+    import capital
+    free = capital.free(); dep_all = capital.deployed(); equity = round(free + dep_all, 2)
+    rows, remaining_total, cap_total = [], 0.0, 0.0
+    for a in list_agents("trading"):
+        cap = float(a.get("capital", 0)); dep = capital.deployed(a["id"])
+        left = max(0.0, cap - dep)
+        cap_total += cap
+        if a.get("enabled"):
+            remaining_total += left
+        row = {"id": a["id"], "name": a.get("name"), "enabled": a.get("enabled"), "capital": round(cap, 2),
+               "deployed": round(dep, 2), "remaining": round(left, 2),
+               "spendable": round(min(left, free), 2)}
+        try:                                    # can this agent's own caps even place a minimum order?
+            import fees
+            pol = policy_for(a["id"])
+            pair = (a.get("pairs") or ["DOT/USD"])[0]
+            px = _pair_price(pair); info = fees.pair_info(pair); _, tk = fees.rates(pair)
+            if px:
+                mp = float(pol.get("max_position_pct", 100)) / 100
+                min_q = max(float(info.get("ordermin") or 0) * px, float(info.get("costmin") or 0)) * (1 + tk)
+                max_q = min(left, free) * mp / (1 + tk)
+                row.update({"pair": pair, "min_order": round(min_q, 2), "max_order": round(max_q, 2),
+                            "can_trade": max_q + 1e-9 >= min_q,
+                            "capital_needed": round(min_q * (1 + tk) / mp, 2)})
+        except Exception:
+            pass
+        rows.append(row)
+    over = remaining_total > free + 1e-9 or cap_total > equity + 1e-9
+    return {"available": round(free, 2), "agents_claim": round(remaining_total, 2),
+            "capital_total": round(cap_total, 2), "deployed": round(dep_all, 2), "equity": equity,
+            "over_allocated": over,
+            "overshoot": round(max(0.0, remaining_total - free, cap_total - equity), 2),
+            "agents": rows}
 
 
 def set_pairs(agent_id: str, pairs: list) -> dict:
@@ -255,6 +308,38 @@ def set_pairs(agent_id: str, pairs: list) -> dict:
     d['agents'][agent_id] = a
     _save(d)
     return _summary(a)
+
+
+def set_profile(agent_id: str, profile: str, reset_overrides: bool = False) -> dict:
+    """Switch an existing trading agent's profile (personality/risk posture).
+
+    reset_overrides=True also wipes policy_overrides so the new profile's own
+    numbers take effect. Otherwise old tuned overrides keep shadowing the new
+    profile key-by-key (see shadowed_keys).
+    """
+    d = _load(); a = get_agent(agent_id)
+    if a.get("kind") != "trading":
+        raise ValueError(f"{agent_id} is kind '{a.get('kind')}' — only trading agents have a profile")
+    if profile not in PROFILES:
+        raise ValueError(f"unknown profile '{profile}'. Known: {', '.join(PROFILES)}")
+    a["profile"] = profile
+    if reset_overrides:
+        a["policy_overrides"] = {}
+    d["agents"][agent_id] = a
+    _save(d)
+    return _summary(a)
+
+
+def shadowed_keys(agent_id: str, profile: str) -> list:
+    """Overrides on this agent that would shadow `profile`'s own values:
+    [(key, override_value, profile_value), ...]"""
+    a = get_agent(agent_id)
+    cfg = PROFILES.get(profile, {}).get("cfg", {})
+    out = []
+    for k, v in (a.get("policy_overrides") or {}).items():
+        if k in cfg and cfg[k] != v:
+            out.append((k, v, cfg[k]))
+    return out
 
 
 def set_override(agent_id: str, key: str, value) -> dict:
@@ -290,6 +375,8 @@ if __name__ == "__main__":
     e = sub.add_parser("enable"); e.add_argument("id")
     di = sub.add_parser("disable"); di.add_argument("id")
     ca = sub.add_parser("capital"); ca.add_argument("id"); ca.add_argument("amount", type=float)
+    pr = sub.add_parser("profile"); pr.add_argument("id"); pr.add_argument("name")
+    pr.add_argument("--reset", action="store_true", help="also wipe tuned policy overrides")
     po = sub.add_parser("policy"); po.add_argument("id")
     args = ap.parse_args()
     cmd = args.cmd or "list"
@@ -299,4 +386,5 @@ if __name__ == "__main__":
     elif cmd == "enable": print(json.dumps(set_enabled(args.id, True), indent=2))
     elif cmd == "disable": print(json.dumps(set_enabled(args.id, False), indent=2))
     elif cmd == "capital": print(json.dumps(set_capital(args.id, args.amount), indent=2))
+    elif cmd == "profile": print(json.dumps(set_profile(args.id, args.name, args.reset), indent=2))
     elif cmd == "policy": print(json.dumps(policy_for(args.id), indent=2))
