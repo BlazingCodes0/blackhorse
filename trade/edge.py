@@ -90,14 +90,18 @@ def cell(interval, side, pair=None) -> dict:
         by_pair = rep.get("by_pair", {}) or {}
         if short in by_pair:
             cell_obj = (by_pair[short].get("by_interval", {}) or {}).get(key, {})
-            if side == "BUY":
-                # winning-test verdict drives the BUY cell (range-floor entry)
-                if cell_obj.get("status"):
-                    return cell_obj
-                return {"status": "NO_DATA"}
-            # SELL cells come from the pair's own gate walk-forward (kept under "SELL")
-            sell = cell_obj.get("SELL")
-            return sell if sell else {"status": "NO_DATA"}
+            if isinstance(cell_obj, dict):
+                if side == "BUY":
+                    buy = cell_obj.get("BUY")
+                    if buy and buy.get("status"):
+                        return buy
+                    # if top-level was written as the BUY dict
+                    if cell_obj.get("status") and "SELL" not in cell_obj:
+                        return cell_obj
+                    return {"status": "NO_DATA"}
+                sell = cell_obj.get("SELL")
+                return sell if sell else {"status": "NO_DATA"}
+            return {"status": "NO_DATA"}
     c = (rep.get("by_interval", {}).get(key, {}) or {}).get(side)
     return c or {"status": "NO_DATA"}
 
