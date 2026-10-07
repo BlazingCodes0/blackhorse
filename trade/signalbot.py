@@ -116,6 +116,60 @@ def _spread_verdict(m) -> dict:
             "directionBias": round(bias, 3), "chopLevel": round(chop, 3),
             "strength": round(strength, 3)}
 
+def _entry_gate(c: dict) -> dict:
+    """Explicit 15m-style entry-gate checklist from the live numbers —
+    observability only, does NOT change any decision."""
+    r = c.get("RSI") or {}
+    rsi_gate_ok = bool(r.get("buy")) or (r.get("currentRSI") is not None and r.get("currentRSI") <= (r.get("buyThreshold") or 35))
+    mr = c.get("marketResult") or {}
+    against = str(mr.get("spreadDirection") or "").lower() in ("weakening", "down")
+    score_ok = (c.get("buyScore") or 0) >= 0.60 and (c.get("buyScore") or 0) > (c.get("sellScore") or 0)
+    return {
+        "rsiOk": rsi_gate_ok,
+        "spreadNotAgainst": not against,
+        "scoreOk": score_ok,
+        "entryEligible": bool(c.get("entryEligible")),
+        "trendOk": mr.get("trendState") in ("up", "bull", "rising"),
+        "allPass": rsi_gate_ok and (not against) and score_ok and bool(c.get("entryEligible")),
+    }
+
+def _bottom_watch(c: dict) -> dict:
+    """Armed when price kisses floor/low with 15m strength ~0 — watch, not trigger."""
+    price = c.get("currPrice")
+    floor = c.get("floor"); low = c.get("low")
+    strg = c.get("strength") or 0
+    try:
+        near = price is not None and low is not None and price <= max(floor or low, low) * 1.01
+    except Exception:
+        near = False
+    armed = near and strg < 0.15
+    return {"armed": armed, "price": price, "low": low, "strength": strg,
+            "waitFor": "RSI<=35, spreadVerdict improving, spreadMA bullish, buyScore>=0.60"}
+
+def _setup_scenario(c: dict) -> str:
+    """The 6-scenario rubric as a label — brain context, no gate power."""
+    r = c.get("RSI") or {}
+    mr = c.get("marketResult") or {}
+    sm = c.get("spreadMA") or {}
+    price = c.get("currPrice"); low = c.get("low")
+    buy_score = c.get("buyScore") or 0
+    rsi = r.get("currentRSI") or 99
+    against = str(mr.get("spreadDirection") or "").lower() in ("weakening", "down")
+    if price is not None and low is not None and price < low:
+        return "4: price broke low — range invalidated"
+    if sm.get("signal") == "bullish" and mr.get("trendState") in ("up", "bull", "rising") and price and low and price >= low:
+        return "3: spreadMA bullish + trend up — real one"
+    if rsi <= 35 and not against and buy_score >= 0.60:
+        return "1: RSI washout, spread ok, score ok — BUY candidate"
+    if rsi <= 35 and against:
+        return "2: RSI oversold but spread weakening — wait"
+    strg = c.get("strength") or 0
+    if strg < 0.10 and buy_score >= 0.85:
+        return "5/6: higher-MF score high, 15m strength ~0 — wait for 15m tick"
+    if (c.get("rangeSignal") or "") == "BUY" and strg < 0.15:
+        return "5: range BUY but strength ~0 — bottom-watch, do not chase"
+    return "none: no scenario matches cleanly"
+
 def _ma_verdict(mx: dict) -> str:
     """Gap-size based cross verdict — a 0.02% gap is a coil, not a bias."""
     gap = (mx or {}).get("gap_pct")
@@ -196,6 +250,8 @@ def normalize(raw: dict, meta: dict) -> dict:
             "RSI": s.get("RSI"),
             # smartbot-style ma10/ma30 spread (aliases of maFast/maSlow)
             "spreadMA": _spread_ma(raw, ch),
+            # (entryGate / bottomWatch / setupScenario are filled in below,
+            #  once the normalized channel dict exists)
             # REAL MA20/MA50 cross data straight from SignalBot
             "maCross": {**_ma_cross((raw.get("signals") or {}).get("maCrossTripple", {}).get(ch)),
                         "verdict": _ma_verdict(_ma_cross((raw.get("signals") or {}).get("maCrossTripple", {}).get(ch))) if str(s.get("interval")) == "15m" else None},
@@ -206,6 +262,15 @@ def normalize(raw: dict, meta: dict) -> dict:
                 "prices": adv.get("prices") or {},
             },
         }
+    # observability layer: explicit entry-gate checklist + bottom-watch + scenario
+    # label. Context for the brain and the owner — changes NO decision.
+    for _ch in channels.values():
+        try:
+            _ch["entryGate"] = _entry_gate(_ch)
+            _ch["bottomWatch"] = _bottom_watch(_ch)
+            _ch["setupScenario"] = _setup_scenario(_ch)
+        except Exception:
+            pass
     grids = raw.get("grids") or {}
     ms = raw.get("marketStructure") or {}
     return {

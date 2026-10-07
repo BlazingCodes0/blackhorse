@@ -93,7 +93,13 @@ def snapshot() -> dict:
                  "global": nctx.get("global"),
                  "headlines": [h.get("title") for h in nctx.get("headlines", [])][:10]},
         "signal": sig if sig else {"available": False},
-        "brain_verdict": brain[-1]["verdict"] if brain else None,
+        "brain_verdict": next((b.get("verdict") for b in reversed(brain)
+                               if isinstance(b.get("verdict"), dict)
+                               and b["verdict"].get("bias")
+                               and not b["verdict"].get("parse_error")), None),
+        "brain_last_error": brain[-1].get("verdict", {}).get("notes")
+                            if brain and not (isinstance(brain[-1].get("verdict"), dict) and brain[-1]["verdict"].get("bias"))
+                            else None,
     }
 
 

@@ -39,6 +39,71 @@ def _curr_price(chans):
 
 import calendar as _calendar
 
+_SCEN_WHY = {
+    "1": "why not buy: RSI oversold but score gate still failing — wait for buyScore ≥ 0.60 to hold, that's the knife having stopped falling.",
+    "2": "why not buy: RSI is oversold but the spread is still weakening — classic knife, the gate is right to refuse. Wait for the spread to stop falling.",
+    "3": "why not buy: this is the green-light scenario — spreadMA bullish + trend up. If it drifted off, patient again.",
+    "4": "why not buy: the floor broke and the range invalidated — a floor that won't hold isn't a floor. No buy, no edge.",
+    "5": "why not buy: 15m strength is asleep at ~0. Zero isn't a buy signal — it's the tape holding its breath. Wait for 15m rising off 0 + RSI≤35 before any fill.",
+    "5/6": "why not buy: higher timeframes say the floor is worth a look, but 15m is quiet. We let 15m strength-rising-from-0 *lead*, not chase 240m.",
+    "6": "why not buy: wait for the 15m up-tick — the 60m/240m scores are nearly there, but the trigger lane stays 15m.",
+}
+
+_SCEN_LINES = [  # kept verbatim — these are the owner's decision rubric
+    "Scenario 1 — RSI washout, price holds above low\n- BuyScore often rises as RSI drops (range floor buys). If RSI ≤ 35 and score ≥ 0.60 and spread mode is not_against → 15m BUY fires. This is the profile's bread-and-butter setup. Buy.",
+    "Scenario 2 — RSI ≤ 35 but spread still weakening\n- RSI gate passes, but spreadMode for 15m fails. Why not buy: catching a knife while the spread is still deteriorating is where floor buys historically lost. Wait.",
+    "Scenario 3 — SpreadMA flips bullish, trend turns up, price above low\n- Everything green: spreadMode ok, RSI likely rising from oversold, 240m tide confirming. Buy — often a few bars after the exact low, which is the tax we accept.",
+    "Scenario 4 — Price slices through low/floor\n- trendState degrades, range invalidation triggers, spreadMA not bullish. No buy — a floor that won't hold isn't a floor.",
+    "Scenario 5 — 15m strength == 0 while 240m strength rising\n- 15m strength=0 means the 15m isn't leading — defer to tide/240m for direction, use 15m only for entry timing: wait for 15m strength rising off 0 + RSI turning up from ≤35. Don't market-buy the zero.",
+    "Scenario 6 — 60m/240m scores nearly threshold-broken, 15m weak\n- If we let 15m be the final gate we can stay flat while 240m rides a floor→mid-range mean reversion. Practically: watch 15m strength rising from 0 as the trigger even if the 15m range signal is neutral.",
+]
+
+def _edge_postscript():
+    """Owner-style edge readout for the brain verdict panel:
+    a live 'Now (baseline)' line computed from the freshest signal file,
+    then the scenario rubric verbatim, then the gate booleans."""
+    import json as _j
+    sig = None; src = None
+    for cand in (Path.home()/"blackhorse"/"logs"/"signal_preview.json",
+                 Path.home()/"blackhorse"/"logs"/"signal_latest.json"):
+        try:
+            if cand.exists():
+                s = _j.loads(cand.read_text())
+                if isinstance(s, dict) and s.get("available"):
+                    sig, src = s, ("preview" if "preview" in cand.name else "bot")
+                    break
+        except Exception:
+            continue
+    if not sig:
+        return "\n— edge posture —\n(no signal data yet — click ▶ Run SignalBot now to populate this)"
+    chans = sig.get("channels") or {}
+    ripple = chans.get("ripple") or next(iter(chans.values()), {})
+    rsi_vals = [c.get("RSI", {}).get("currentRSI") for c in chans.values()]
+    rsi_vals = [v for v in rsi_vals if isinstance(v, (int, float))]
+    rsi_span = f"{min(rsi_vals):.0f}–{max(rsi_vals):.0f}" if len(rsi_vals) >= 2 else (f"{rsi_vals[0]:.0f}" if rsi_vals else "?")
+    spreads = {str(c.get("marketResult", {}).get("spreadDirection") or "?") for c in chans.values()}
+    spread_txt = spreads.pop() if len(spreads) == 1 else "mixed " + "/".join(sorted(spreads))
+    buys = "/".join(c.get("interval", "?") for c in chans.values() if str(c.get("rangeSignal")).upper() == "BUY") or "none"
+    ripple_reason = ripple.get("reason") or "no interval-specific historical setup crossed its action threshold."
+    sc = str(ripple.get("setupScenario") or "none")
+    eg = ripple.get("entryGate") or {}
+    gates = ", ".join(f"{k}={('✓' if v else '✗')}" for k, v in eg.items() if k != "allPass")
+    lines = [
+        f"\n— edge posture — (source: {src}, ts {sig.get('ts','?')[11:16]} UTC)",
+        f"Now (baseline) — {ripple.get('action','?')} (conf {ripple.get('confidence')})",
+        f"- Range map says BUY on {buys}, but RSI {rsi_span} (gate needs ≤35), spread {spread_txt}, 15m buyScore {ripple.get('buyScore')}.",
+        f"  Why not buy: {ripple_reason}",
+        f"- Current scenario: {sc}",
+        "  Why not sell: sell gate closed everywhere — sellScore ~0 and this is spot-only; no short lane to chase.",
+        "",
+        "Scenario rubric:",
+    ] + _SCEN_LINES + [
+        "",
+        f"Live entry gate (ripple/15m): {gates}",
+    ]
+    return "\n".join(lines)
+
+
 def _fmt_ts(ts):
     """2026-10-06T20:48:02Z -> Oct 06 8:48 PM (local)"""
     try:
@@ -874,9 +939,13 @@ class BlackHorse(QMainWindow):
         hl = n.get("headlines", [])
         self.news_view.setPlainText("\n".join(f"• {h}" for h in hl) or "(no headlines)")
         bv = snap.get("brain_verdict")
-        self.verdict_view.setPlainText(
-            json.dumps(bv, indent=2) if bv else "no verdict yet — click 'Ask brain now'"
-        )
+        try:
+            import coach as _coach_mod
+            _bv_text = _coach_mod._fmt_verdict(bv) + _edge_postscript() if bv else "no verdict yet — click 'Ask brain now'"
+        except Exception:
+            import json as _json
+            _bv_text = (_json.dumps(bv, indent=2) if bv else "no verdict yet — click 'Ask brain now'") + _edge_postscript()
+        self.verdict_view.setPlainText(_bv_text)
         sig = snap.get("signal", {})
         _sig_src = "bot live"
         # the signal block shows the user's manual preview run when one exists —
@@ -913,6 +982,14 @@ class BlackHorse(QMainWindow):
                 if sm.get('available'):
                     tag = " ⭐" if is15m else " (read 15m for truth)"
                     lines.append(f"    MA10−MA30 diff={sm.get('diff'):+.4f} ({sm.get('diffPct'):+.3f}%) · {sm.get('signal')}{tag}")
+                if is15m:
+                    sc = c.get('setupScenario')
+                    bw = c.get('bottomWatch') or {}
+                    lines.append(f"    scenario: {sc}")
+                    if bw.get('armed'):
+                        lines.append(f"    bottom-watch: ARMED · price {_n(bw.get('price'))} vs low {_n(bw.get('low'))} · strength {_n(bw.get('strength'),2)} · waiting on RSI≤35 / spread improving / buyScore≥0.60 ⭐")
+                    else:
+                        lines.append(f"    bottom-watch: off (strength {_n(bw.get('strength'),2)} ≥ 0.15 or price off floor)")
                 mx = c.get('maCross') or {}
                 if is15m and mx.get('verdict'):
                     lines.append(f"    macross MA20={_n(mx.get('ma20'))} MA50={_n(mx.get('ma50'))} · {mx.get('verdict')} · cross {mx.get('cross')} ⭐")
@@ -1083,6 +1160,7 @@ class BlackHorse(QMainWindow):
     def ask_brain_now(self):
         import threading
         self.verdict_view.setPlainText("asking brain… (budgeted; may defer if cooling down)")
+        self._brain_ask_result = {"done": False}
         def _work():
             try:
                 _, engine = self._trade_mod()
@@ -1090,10 +1168,19 @@ class BlackHorse(QMainWindow):
                 _s.path.insert(0, str(Path.home()/"blackhorse"/"trade"))
                 import coach
                 v = coach.ask_brain(coach.build_packet())
-                self.verdict_view.setPlainText(json.dumps(v, indent=2))
+                self._brain_ask_result = {"done": True, "text": coach._fmt_verdict(v) + _edge_postscript()}
             except Exception as e:
-                self.verdict_view.setPlainText(f"(brain error: {e})")
-        threading.Thread(target=_work, daemon=True).start()
+                self._brain_ask_result = {"done": True, "text": f"(brain error: {e})" + _edge_postscript()}
+        def _apply():
+            r = self._brain_ask_result
+            if r.get("done"):
+                self.verdict_view.setPlainText(r["text"])
+            else:
+                QTimer.singleShot(1000, _apply)
+        def _start():
+            threading.Thread(target=_work, daemon=True).start()
+            QTimer.singleShot(1000, _apply)
+        _start()
 
     # ================= AGENTS (the bodies) =================
     def _agents_mod(self):
