@@ -593,3 +593,42 @@ d8e5189 shared signals: MA20/MA50 cross ALSO comes from 15m only (owner rule)
 29ef627 spread: trust ONLY the 15m read (owner rule), encoded not re-asked
 3c98b0f spread: gate on the NUMBERS, not the text label; show them in the GUI
 2984834 docs: snapshot — honest correction (real validators, restored fields, proven 60m)
+
+================================================================================
+## SESSION 8 (2026-10-07) — spread verdicts, smartbot MA alias, preview/bot split
+================================================================================
+
+### Finds (durably useful)
+- **smartbot ma10/ma30 are aliases, not literal MAs.** In
+  `<SignalBot project>/SignalBot/core/smartSupportBot.js`:
+  `out.ma10 = out.maFast; out.ma30 = out.maSlow` (default periods 20/50),
+  `maSpreadPct = (fast - slow) / slow * 100`,
+  `maSignal`: bullish >= +3%, bearish <= -3%, else neutral.
+  The live SignalBot sidecar run does NOT invoke smartbot — smartbot only lives in
+  `qubitFlow.js` / `quantEntangle.js` / backtest utils — so the smartbt dumps are
+  frozen historical artifacts. We now compute the same ma10/ma30/maSpreadPct
+  fields per channel from live `signals.maCrossTripple` in signalbot.py
+  (`_spread_ma`), fresh on every run.
+- **Why HOLD despite BUY range map** (verified in `rangeSignalGate.js`):
+  15m BUY requires entryEligible && buyScore >= 0.60 && buyScore > sellScore &&
+  RSI gate (buy needs RSI <= buyThreshold ~35) && spread not 'against'.
+  Profile note: "Floor entries only held an edge when the MA spread was
+  improving."
+- **Floor entry rule of thumb (owner rule):** never buy *because* strength == 0;
+  buy only after the zero — strength rising from ~0 + RSI <= 35 + spread not
+  weakening + buyScore >= 0.60. Bottom-watch armed when currPrice <= floor/low
+  with 15m strength < ~0.15. See docs/ENTRY_GATE_FINDINGS.md.
+
+### Changes this session
+- signalbot.py: `_spread_verdict()` (19-bar chopLevel/directionBias/strength
+  based, 15m-only) and `_spread_ma()` (smartbot-alias fields per channel);
+  `run(..., out=)` now takes an output path.
+- app/main.py: trade-page signal block shows [manual preview] vs [bot live];
+  MA-spread line "MA10−MA30 diff=... (pct)"; macross line shows MA20/MA50 +
+  verdict; "entry eligible=/exit eligible=" wording; rounded numbers.
+- Split files: `logs/signal_latest.json` is BOT-ONLY (written by trade/loop.py,
+  age-gated by signal_max_age=600s). Manual runs write
+  `logs/signal_preview.json`. Manual clicks no longer touch the bot file or
+  satisfy its staleness gate.
+- Loop: heartbeat + observer + execute.mark every wake; SignalBot refresh only
+  when bot file older than signal_max_age (default 600s, not a CLI flag yet).

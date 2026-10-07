@@ -188,6 +188,15 @@ def render_prompt(packet: dict) -> str:
 
 
 def parse_verdict(text: str) -> dict:
+    if text.startswith("(brain offline"):
+        return {"bias": "NEUTRAL", "regime": "UNCERTAIN", "confidence": 0.0,
+                "risk_level": "HIGH", "stance": "STAND_DOWN", "watch": [],
+                "notes": "brain offline — no internet; holding steady, will retry when back online"}
+    if text.startswith("(brain error") or text.startswith("(brain deferred") \
+            or text.startswith("(brain disabled") or text.startswith("(no output)"):
+        return {"bias": "NEUTRAL", "regime": "UNCERTAIN", "confidence": 0.0,
+                "risk_level": "HIGH", "stance": "STAND_DOWN", "watch": [],
+                "notes": f"brain unavailable: {text[:200]}"}
     start, end = text.find("{"), text.rfind("}") + 1
     if start < 0 or end <= start:
         return {"raw": text, "parse_error": "no JSON object found"}

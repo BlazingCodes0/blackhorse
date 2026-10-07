@@ -17,6 +17,48 @@ settings = _settings_mod
 LOG = Path.home() / "blackhorse" / "logs" / "threats.jsonl"
 LOCKDOWN_FLAG = Path.home() / "blackhorse" / "config" / "LOCKDOWN"
 
+def _n(v, dp=4):
+    """compact number print — '?' for missing"""
+    try:
+        return f"{float(v):.{dp}f}"
+    except (TypeError, ValueError):
+        return str(v)
+
+def _curr_price(chans):
+    """first real currPrice across channels (ripple first)"""
+    for name in ("ripple", "wave", "tide"):
+        c = chans.get(name) or {}
+        p = c.get("currPrice")
+        if p not in (None, "", 0):
+            return p
+    for c in chans.values():
+        p = (c or {}).get("currPrice")
+        if p not in (None, "", 0):
+            return p
+    return "?"
+
+import calendar as _calendar
+
+def _fmt_ts(ts):
+    """2026-10-06T20:48:02Z -> Oct 06 8:48 PM (local)"""
+    try:
+        lt = time.localtime(_calendar.timegm(time.strptime(str(ts), "%Y-%m-%dT%H:%M:%SZ")))
+        return time.strftime("%b %d %-I:%M %p", lt)
+    except Exception:
+        return str(ts)
+
+def _ago(ts):
+    """iso ts -> '45s ago' / '3m ago' / '2h ago'"""
+    try:
+        ep = _calendar.timegm(time.strptime(str(ts), "%Y-%m-%dT%H:%M:%SZ"))
+        d = max(0, int(time.time() - ep))
+        if d < 60: return f"{d}s ago"
+        if d < 3600: return f"{d//60}m ago"
+        if d < 86400: return f"{d//3600}h ago"
+        return f"{d//86400}d ago"
+    except Exception:
+        return "?"
+
 class BlackHorse(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -235,7 +277,7 @@ class BlackHorse(QMainWindow):
             tide = ch.get("tide", {})
             lines = [
               f"loop: {'ok' if s.get('heartbeat')=='ok' else 'halted'} · interval {s.get('ts','?')[11:16]} · decision {s.get('decision')} — {s.get('reason')}",
-              f"signal: {sig.get('pair','?')} @ {ripple.get('currPrice')} · 60m str {ripple.get('strength')} · trend {ripple.get('trendState')} · signal {ripple.get('rangeSignal')}",
+              f"bot signal: {sig.get('pair','?')} @ {ripple.get('currPrice')} · 60m str {ripple.get('strength')} · trend {ripple.get('trendState')} · signal {ripple.get('rangeSignal')}",
               f"tide(1440m): trend {tide.get('trendState')} · rangeSignal {tide.get('rangeSignal')} · buy ticking at {tide.get('advisor',{}).get('buy')}",
               f"marks: {[m.get('closed') if isinstance(m,dict) else m for m in s.get('marks',[])]}",
             ]
@@ -836,28 +878,48 @@ class BlackHorse(QMainWindow):
             json.dumps(bv, indent=2) if bv else "no verdict yet — click 'Ask brain now'"
         )
         sig = snap.get("signal", {})
+        _sig_src = "bot live"
+        # the signal block shows the user's manual preview run when one exists —
+        # otherwise fall back to what the bot is actually running on
+        try:
+            _pv = Path.home() / "blackhorse" / "logs" / "signal_preview.json"
+            if _pv.exists():
+                _snap = json.loads(_pv.read_text())
+                if isinstance(_snap, dict) and _snap.get("available"):
+                    sig = _snap
+                    _sig_src = "manual preview"
+        except Exception:
+            pass
         if sig.get("available"):
             chans = sig.get("channels", {})
-            lines = [f"{sig.get('pair')} @ {sig.get('exchange')} · strategy {sig.get('strategy')} · {sig.get('run_ms')}ms · {sig.get('ts')}"]
+            lines = [f"[{_sig_src}] {sig.get('pair')} @ {sig.get('exchange')} · strategy {sig.get('strategy')} · price {_curr_price(chans)} · ran {_ago(sig.get('ts'))} · {_fmt_ts(sig.get('ts'))} · took {(sig.get('run_ms') or 0)/1000:.1f}s"]
             for name, c in chans.items():
                 rr = c.get("marketResult") or {}
                 r = c.get("RSI") or {}
                 adv = c.get("advisor") or {}
                 lines.append(
                     f"\n{name:8s} {c.get('interval','?'):>5}  {c.get('action','?'):5s} conf={c.get('confidence')}  strength={round(c.get('strength') or 0,3)} ({c.get('strengthDirection')})")
-                lines.append(f"    trend={rr.get('trendState')} spread={rr.get('spreadDirection')} RSI={r.get('currentRSI')} entryEligible={c.get('entryEligible')} exitEligible={c.get('exitEligible')}")
-                # the ACTUAL spread numbers (the word alone hides magnitude)
                 chg = rr.get('spreadChange')
                 cnt = rr.get('spreadCount')
-                trusted = " ⭐TRUSTED" if str(c.get('interval')) == "15m" else " (read 15m for truth)"
-                if chg is not None:
-                    arrow = "↑improving" if chg > 0 else ("↓weakening" if chg < 0 else "→flat")
-                    lines.append(f"    SPREAD change={chg:+.4f} over {cnt} bars {arrow} · latest={rr.get('latestSpread')} (was {rr.get('intialSpread')}){trusted}")
+                is15m = str(c.get('interval')) == "15m"
+                sv = rr.get('spreadVerdict')
+                # compact spread numbers; drop the raw "spread=weakening" word (line below carries it)
+                lines.append(f"    trend={rr.get('trendState')} RSI={r.get('currentRSI')} · entry eligible={c.get('entryEligible')} · exit eligible={c.get('exitEligible')}")
+                if is15m and sv:
+                    lines.append(f"    SPREAD latest={_n(rr.get('latestSpread'))} (was {_n(rr.get('intialSpread'))}) · verdict {sv.get('verdict')} · bias {sv.get('directionBias')} chop {sv.get('chopLevel')} str {sv.get('strength')} ({sv.get('bars')} bars) ⭐")
+                elif chg is not None:
+                    lines.append(f"    SPREAD latest={_n(rr.get('latestSpread'))} (was {_n(rr.get('intialSpread'))}) · change {chg:+.4f} / {cnt} bars (read 15m for truth)")
+                sm = c.get('spreadMA') or {}
+                if sm.get('available'):
+                    tag = " ⭐" if is15m else " (read 15m for truth)"
+                    lines.append(f"    MA10−MA30 diff={sm.get('diff'):+.4f} ({sm.get('diffPct'):+.3f}%) · {sm.get('signal')}{tag}")
                 mx = c.get('maCross') or {}
-                ma_trusted = " ⭐TRUSTED" if str(c.get('interval')) == "15m" else " (ma read 15m for truth)"
-                lines.append(f"    MA20={mx.get('ma20')} MA50={mx.get('ma50')} gap={mx.get('gap_pct')}% bias={mx.get('bias')} cross={mx.get('cross')}{ma_trusted}")
-                lines.append(f"    rangeSignal={c.get('rangeSignal')} rangeBias={c.get('rangeBias')} curve stop={rr.get('stopLoss')} target={rr.get('takeProfit')}")
-                lines.append(f"    advisor buy={adv.get('buy')} sell={adv.get('sell')}")
+                if is15m and mx.get('verdict'):
+                    lines.append(f"    macross MA20={_n(mx.get('ma20'))} MA50={_n(mx.get('ma50'))} · {mx.get('verdict')} · cross {mx.get('cross')} ⭐")
+                else:
+                    lines.append(f"    macross MA20={_n(mx.get('ma20'))} MA50={_n(mx.get('ma50'))} · {mx.get('bias')} · cross {mx.get('cross')} (read 15m for truth)")
+                lines.append(f"    range={c.get('rangeSignal')} bias={c.get('rangeBias')} · stop {_n(rr.get('stopLoss'))} target {_n(rr.get('takeProfit'))}")
+                lines.append(f"    advisor buy {adv.get('buy')} sell {adv.get('sell')}")
             self.signal_view.setPlainText("\n".join(lines))
             self.signal_status.setText("available")
             self.signal_status.setStyleSheet("color:#22c55e")
@@ -998,7 +1060,8 @@ class BlackHorse(QMainWindow):
                 import signalbot as _sig
                 ivs = [x.strip() for x in (self.interval_input.text() if hasattr(self, 'interval_input') else '').split(',') if x.strip()]
                 pair = (self.signal_pair_combo.currentText() if hasattr(self, 'signal_pair_combo') else 'DOT/USD')
-                _sig.run(pair=pair, strategy="swing", channels=ivs or None)
+                _sig.run(pair=pair, strategy="swing", channels=ivs or None,
+                         out=str(Path.home() / "blackhorse" / "logs" / "signal_preview.json"))
             except Exception as e:
                 self._sig_res.err = str(e)
             finally:
