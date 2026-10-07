@@ -803,3 +803,50 @@ WHAT I'M ABOUT TO BUILD (research-only, does not touch live paths):
    - Write logs/mtf_fusion_report.json + console table.
 4. Report honestly to the owner + save findings back here. NOTHING wired into
    loop/decider/broker/agents until the owner sees numbers and says go.
+
+==============================================================================
+## SESSION 10d (2026-10-07) — DONE: 240m eligible-BUY + 15m-spread test (readout)
+==============================================================================
+Owner asked to TEST (not implement): "240m eligible buy while spread is
+allowing — and I'm guessing all use 15m spread and ma cross."
+
+### 1. Mechanism — owner's guess CONFIRMED in code (decider.py:286-319)
+Every channel's BUY/SELL gate reads the ONE shared 15m read: numeric 15m spread
+change (spread_flat_epsilon) + the 15m MA20/50 cross. No other TF's spread is
+ever read. BUT both knobs are OFF in config/decider.json
+(require_spread_agreement=false, require_ma_cross_agreement=false) so today the
+15m read never blocks.
+
+### 2. Method (all real engine output, no fabrication)
+Fresh time-aligned rows: new scratch dumper (logs/rows/fusion/bh_fusiondump.js,
+reuses getOHLC-ish feed + the REAL smartBackTest + QubitFlow.dryRunner; does NOT
+modify run_pair_rows.js) for DOT 15m + 240m with key->candle-time maps. Joint
+window = LAST 7.5 DAYS (Kraken OHLC caps 15m backfill at 720 candles — the hard
+constraint on cross-TF backtesting). 240m eligible-BUY = rangeSignal==BUY &&
+strength<=0.30. Filters applied at the CONCURRENT 15m bar. Forward outcome =
+entry at bar low, exit at +N 240m closes, net of 1.0% round trip.
+
+### 3. The 15m read on DOT is ~ALWAYS NEUTRAL (the key finding)
+Recent 15m row distribution: context.maSignal = 597 neutral / 24 bearish /
+0 bullish (96% neutral). 15m maSpreadPct median -0.03% (flat chop). So "spread
+allowing" is nearly always trivially true and CANNOT discriminate 240m buys.
+This is the same reason the live 240m BUY kept failing differently (advisor
+sell-side) — the 15m layer offers no directional signal on DOT right now.
+
+### 4. Aligned joint readout (net of 1.0% fee)
+   240m eligible BUY, no filter (n=86): +3 +0.11% | +5 +0.02% | +10 +0.30% med, win 53%
+   +15m spread not-weakening (n=85): +10 +0.12% med, win 53%  -> NO change
+   +15m trend rising/aturn  (n=84): +10 +0.08% med, win 52%    -> NO change
+   +15m spread improving / maSignal bullish: n=1-2 -> statistically void
+VERDICT: the 15m-spread-allowing filter does NOT rescue 240m BUY. The aligned
+test stays UNPROVEN (win ~53%, net ~flat) because the 15m layer is neutral 96%
+of the time. The earlier long-window single-TF scan agrees: 240m buy-floor is
+UNPROVEN; the ONLY fee-clean fusion home measured is the 60m buy-floor window
+(win 81-92% at +10 bars, matches the system's real PROVEN 60m cell).
+
+### 5. Honest limits + what it takes to settle it
+- Aligned cross-TF n is capped by Kraken's 720-candle 15m backfill (~45 240m
+  bars); statistically strong joint numbers need a FORWARD collector (append
+  signalbot's already time-aligned multi-TF snapshots each loop run).
+- Recommendation held: build the fusion at 60m (small-TF timing + 60m price), not
+  240m. No code changed; research lived in logs/rows/fusion (gitignored).
