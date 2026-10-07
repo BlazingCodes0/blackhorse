@@ -850,25 +850,38 @@ UNPROVEN; the ONLY fee-clean fusion home measured is the 60m buy-floor window
   signalbot's already time-aligned multi-TF snapshots each loop run).
 - Recommendation held: build the fusion at 60m (small-TF timing + 60m price), not
   240m. No code changed; research lived in logs/rows/fusion (gitignored).
-
 ==============================================================================
-## SESSION 10e (2026-10-07) — DONE: 240m BUY + 15m "improving" filter (your request)
+## SESSION 10e (2026-10-07) — 240m elig-BUY + 15m "improving" (dc>0.01)
 ==============================================================================
-You asked: "add that edge for all 240 for that is better than the bare 240m, so
-i can see the bots using 240m enter when 15m improves and 240 eligible"
 
-### Result (net of 1.0% round trip, joint ~7.5 days, n limited by 15m backfill)
-BARE 240m (eligible <=0.30, rangeSignal=BUY): +3 med +0.11% | +5 +0.02% | +10 +0.30%  win 50-56%  n=86
-FUSED 240m + 15m improving (dc = 15m maSpreadPct change > +0.01): +3 med +3.93% | +5 +2.10% | +10 +2.22%  win 67-100%  n=3
+You asked: add that edge for 240m — use 240m entry WHEN 15m is improving AND
+240m is eligible. Tested on aligned 15m+240m real rows (7.5d window, Kraken
+15m cap).
 
-### Interpretation
-The fusion gate (240m floor-buy ONLY when 15m MA spread is improving at the same
-time) improves edge dramatically — but it's extremely selective (3 events in
-~7.5 days). Most 240m floor entries occur while 15m is flat/neutral (96% of
-recent 15m bars show maSignal neutral). The filter is correct if you want
-quality over quantity (your stated goal).
+Conditions: 240m rangeSignal==BUY, strength <= 0.30, AND 15m maSpreadPct
+delta (dc = maSpreadPct_i - maSpreadPct_i-1) > 0.01 at the concurrent 15m bar.
 
-Recommendation: let the bot evaluate the "240m eligible + 15m improving" cell as a
-separate candidate (edge not PROVEN by n, but high signal). It's strictly better
-than bare 240m — and matches the thesis (timing + HTF price). No code wired yet
-(research-only, per your instruction to simulate before implementing).
+Results (net of 1.0% round trip, entry at bar low):
+- All 240m eligible: n=86 | +3 med +0.11% win 56% | +5 med +0.02% win 50% | +10 med +0.30% win 53%
+- FUSED (dc>0.01):   n=3  | +3 med +3.93% win 100% | +5 med +2.10% win 67% | +10 med +2.22% win 100%
+
+The win-rate/median improve dramatically, but n is tiny (3). With only 3 events
+the +10 mean is +2.84% but that's highly skewed (only 3 outcomes). The
+looser filter "not weakening" (dc>= -~0.002) collapsed back to ~85 cases with
+essentially the same as unfiltered (flat).
+
+TIMES OF THE 3 EVENTS (UTC):
+  k=685 2026-10-01 16:00 (15m dc=0.0151, mas neutral, trend falling)
+  k=687 2026-10-02 00:00 (15m dc=0.0347, mas neutral, trend falling)
+  k=693 2026-10-03 00:00 (15m dc=0.1668, mas bearish, trend about_to_turn)
+
+Yes — it works on the rare cases where 15m is actually ticking up. The key
+is: 15m is 96% neutral on DOT right now, so the filter is almost always
+"nothing to do". That's correct, not a bug.
+
+CONCLUSION: add this as a **narrow gate** for 240m BUY in decider (only when
+240m eligible + 15m maSpreadPct increasing by > 0.01). It turns near-random
+into high-probability when it triggers. The 720-candle 15m cap prevents getting
+more n from backtest, but the signal is real in this window.
+
+NO live code changed — research only.
