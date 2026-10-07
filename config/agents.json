@@ -100,9 +100,12 @@
       "policy_overrides": {
         "min_reward_risk": 2.0,
         "channels": [
-          "wave"
+          "ripple",
+          "wave",
+          "tide"
         ],
-        "entry_order_type": "market"
+        "entry_order_type": "market",
+        "strategy": "swing"
       },
       "created": "2026-10-07T11:48:07Z",
       "pairs": [
