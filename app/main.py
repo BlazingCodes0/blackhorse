@@ -11,6 +11,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QAction, QIcon
 sys.path.insert(0, str(Path.home() / "blackhorse" / "skin"))
+sys.path.insert(0, str(Path.home() / "blackhorse" / "app"))
+from agents_ui import AgentsMixin
 import settings as _settings_mod
 settings = _settings_mod
 
@@ -124,7 +126,7 @@ def _ago(ts):
     except Exception:
         return "?"
 
-class BlackHorse(QMainWindow):
+class BlackHorse(AgentsMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("BlackHorse — multi-agent money system")
@@ -1190,78 +1192,6 @@ class BlackHorse(QMainWindow):
         import agents, broker
         return agents, broker
 
-    def _build_agents(self):
-        from PyQt6.QtWidgets import QScrollArea, QComboBox, QSpinBox
-        scroll = QScrollArea(); scroll.setWidgetResizable(True)
-        w = QWidget(); v = QVBoxLayout(w)
-        v.addWidget(QLabel("AGENTS — the bodies. BlackHorse (brain) owns them; each trades by its own profile."))
-
-        # create row
-        v.addWidget(QLabel("— Create an agent —"))
-        row = QHBoxLayout()
-        row.addWidget(QLabel("kind"))
-        self.agent_kind = QComboBox(); self.agent_kind.addItems(["trading", "youtube"])
-        row.addWidget(self.agent_kind)
-        row.addWidget(QLabel("profile"))
-        self.agent_profile = QComboBox()
-        try:
-            agents, _ = self._agents_mod()
-            for k, p in agents.profiles().items():
-                self.agent_profile.addItem(f"{k} — {p['label']}", k)
-        except Exception:
-            pass
-        row.addWidget(self.agent_profile)
-        row.addWidget(QLabel("capital"))
-        self.agent_capital = QLineEdit("50"); self.agent_capital.setMaximumWidth(80)
-        row.addWidget(self.agent_capital)
-        b_create = QPushButton("＋ Create agent")
-        b_create.setStyleSheet("background:#1a5;color:white;font-weight:bold")
-        b_create.clicked.connect(self.create_agent)
-        row.addWidget(b_create)
-        row.addStretch(1)
-        v.addLayout(row)
-        self.agent_profile_desc = QLabel("")
-        self.agent_profile_desc.setWordWrap(True); self.agent_profile_desc.setStyleSheet("color:#9ca3af;font-size:11px")
-        v.addWidget(self.agent_profile_desc)
-        self.agent_profile.currentIndexChanged.connect(self._show_profile)
-
-        # list
-        v.addWidget(QLabel("— Your agents —"))
-        from PyQt6.QtWidgets import QListWidget, QListWidgetItem
-        self.agent_list = QListWidget()
-        self.agent_list.currentRowChanged.connect(self._on_agent_selected)
-        v.addWidget(self.agent_list, 1)
-        arow = QHBoxLayout()
-        b_on = QPushButton("Enable"); b_on.clicked.connect(lambda: self.agent_toggle(True))
-        b_off = QPushButton("Disable"); b_off.clicked.connect(lambda: self.agent_toggle(False))
-        arow.addWidget(b_on); arow.addWidget(b_off)
-        arow.addStretch(1)
-        v.addLayout(arow)
-        from PyQt6.QtWidgets import QTabWidget
-        self.agent_tabs = QTabWidget()
-        v.addWidget(self.agent_tabs, 1)
-        self._agent_pages = []  # (agent_id, tab_index) built on refresh
-
-        # house decision
-        v.addWidget(QLabel("— House decision (broker across enabled agents) —"))
-        hrow = QHBoxLayout()
-        b_house = QPushButton("🧠 Decide now (house)")
-        b_house.clicked.connect(self.house_decide)
-        hrow.addWidget(b_house); hrow.addStretch(1)
-        v.addLayout(hrow)
-        self.house_view = QTextEdit(); self.house_view.setReadOnly(True); self.house_view.setMaximumHeight(160)
-        self.house_view.setFont(QFont("Monospace", 9))
-        v.addWidget(self.house_view)
-
-        btn_refresh = QPushButton("Refresh"); btn_refresh.clicked.connect(self.refresh_agents)
-        v.addWidget(btn_refresh)
-        v.addStretch(1)
-
-        scroll.setWidget(w)
-        self.pages[4] = scroll; scroll.hide()
-        QTimer.singleShot(300, self.refresh_agents)
-        return scroll
-
     # ================= HEART (the referee) =================
     def _heart_mod(self):
         import sys as _s
@@ -1487,133 +1417,6 @@ class BlackHorse(QMainWindow):
         except Exception as e:
             self.agent_status.setText(f"create error: {e}")
 
-    def refresh_agents(self):
-        try:
-            agents, _ = self._agents_mod()
-            self._agent_rows = agents.list_agents()
-            self.agent_list.blockSignals(True); self.agent_list.clear()
-            for a in self._agent_rows:
-                self.agent_list.addItem(QListWidgetItem(
-                    f"{'✅' if a['enabled'] else '⭘'} {a['id']}  {a['name']}  "
-                    f"[{a['kind']}/{a.get('profile') or '-'}]  ${a['capital']}"))
-            self.agent_list.blockSignals(False)
-            self._show_profile()
-            self._rebuild_agent_tabs()
-        except Exception as e:
-            self.house_view.setPlainText(f"agents error: {e}")
-
-    def _selected_agent(self):
-        i = self.agent_list.currentRow()
-        return self._agent_rows[i] if 0 <= i < len(self._agent_rows) else None
-
-    def _on_agent_selected(self, _row):
-        a = self._selected_agent()
-        if not a:
-            return
-        # open/find the per-agent tab
-        for agent_id, idx in getattr(self, "_agent_pages", []):
-            if agent_id == a["id"]:
-                self.agent_tabs.setCurrentIndex(idx)
-                return
-
-    def _rebuild_agent_tabs(self):
-        if not getattr(self, '_agent_rows', None):
-            return
-        try:
-            del self._agent_pages
-            self._agent_pages = []
-        except AttributeError:
-            pass
-        self.agent_tabs.clear()
-        own = QListWidget(); own.currentRowChanged.connect(lambda i: self.agent_list.setCurrentRow(i))
-        try:
-            agents, _ = self._agents_mod()
-            self._agent_rows = agents.list_agents()
-            for a in self._agent_rows:
-                item = f"{'✅' if a['enabled'] else '⭘'} {a['id']} {a['name']} [{a['kind']}/{a.get('profile','-')}] ${a['capital']}"
-                own.addItem(item)
-        except Exception:
-            pass
-        self.agent_tabs.addTab(own, "List")
-        from PyQt6.QtWidgets import QScrollArea
-        for a in self._agent_rows:
-            page = QWidget(); pv = QVBoxLayout(page)
-            agents, _ = self._agents_mod()
-            pol = agents.policy_for(a["id"])
-            prof = agents.profiles().get(a.get("profile"), {})
-            big = QTextEdit(); big.setReadOnly(True); big.setFont(QFont("Monospace", 9))
-            lines = [
-                f"name: {a.get('name')} · id: {a.get('id')}",
-                f"kind: {a.get('kind')} · profile: {a.get('profile')} · enabled: {a.get('enabled')} · capital: ${a.get('capital')}",
-                f"role: {prof.get('label','')}",
-                "description:",
-                prof.get('description',''),
-                "",
-                "— static profile cfg —",
-            ]
-            for k, v in sorted((prof.get('cfg') or {}).items()):
-                lines.append(f"  {k}: {v}")
-            lines.append("")
-            lines.append("— policy_for(agent_id) —")
-            for k, v in sorted(pol.items()):
-                lines.append(f"  {k}: {v}")
-            big.setPlainText("\n".join(lines))
-            pv.addWidget(QLabel(f"{a['name']} ({a['id']})"))
-            pv.addWidget(big, 1)
-            row = QHBoxLayout()
-            b_prof = QPushButton("Show profile")
-            b_prof.clicked.connect(lambda _ch, aid=a['id']: self._select_agent_by_id(aid))
-            b_toggle = QPushButton("Enable" if not a.get('enabled') else "Disable")
-            b_toggle.clicked.connect(lambda _c, aid=a['id'], on=not a.get('enabled'): self._set_agent_enabled(aid, on))
-            row.addWidget(b_prof); row.addWidget(b_toggle); row.addStretch(1)
-            pv.addLayout(row)
-            # per-agent settings editor (feeds agents.set_override -> policy_for)
-            grid = QHBoxLayout()
-            def _edit(label_text, default):
-                w = QLineEdit(str(default)); w.setMaximumWidth(80)
-                grid.addWidget(QLabel(label_text)); grid.addWidget(w)
-                return w
-            le_channels = _edit('channels', ",".join(pol.get('channels', [])))
-            le_entry = _edit('entry<=', pol.get('entry_strength_max',''))
-            le_exit = _edit('exit>=', pol.get('exit_strength_min',''))
-            le_rr = _edit('R:R>=', pol.get('min_reward_risk',''))
-            le_stop = _edit('stop%<=', pol.get('stop_max_pct',''))
-            le_risk = _edit('risk%=', pol.get('risk_per_trade_pct',''))
-            le_maxpos = _edit('maxpos%=', pol.get('max_position_pct',''))
-            le_pairs = _edit('pairs', ','.join(a.get('pairs') or []))
-            le_capital = _edit('capital', str(a.get('capital', 0)))
-            pv.addLayout(grid)
-            def _save_overrides(_checked=False, aid=a['id'], le_channels=le_channels, le_entry=le_entry, le_exit=le_exit, le_rr=le_rr, le_stop=le_stop, le_risk=le_risk, le_maxpos=le_maxpos, le_pairs=le_pairs, le_capital=le_capital):
-                try:
-                    agents, _ = self._agents_mod()
-                    if le_channels.text().strip():
-                        agents.set_override(aid, 'channels', [x.strip() for x in le_channels.text().split(',') if x.strip()])
-                    if le_entry.text().strip():
-                        agents.set_override(aid, 'entry_strength_max', float(le_entry.text()))
-                    if le_exit.text().strip():
-                        agents.set_override(aid, 'exit_strength_min', float(le_exit.text()))
-                    if le_rr.text().strip():
-                        agents.set_override(aid, 'min_reward_risk', float(le_rr.text()))
-                    if le_stop.text().strip():
-                        agents.set_override(aid, 'stop_max_pct', float(le_stop.text()))
-                    if le_risk.text().strip():
-                        agents.set_override(aid, 'risk_per_trade_pct', float(le_risk.text()))
-                    if le_maxpos.text().strip():
-                        agents.set_override(aid, 'max_position_pct', float(le_maxpos.text()))
-                    if le_pairs.text().strip():
-                        agents.set_pairs(aid, [x.strip().upper() for x in le_pairs.text().split(',') if x.strip()])
-                    if le_capital.text().strip():
-                        agents.set_capital(aid, float(le_capital.text()), allow_over=True)
-                    self.refresh_agents()
-                except Exception as e:
-                    import traceback as _tb
-                    self.house_view.setPlainText(f"save error: {e}\n\n{_tb.format_exc()}")
-            b_save = QPushButton("Save to agent policy"); b_save.clicked.connect(_save_overrides)
-            pv.addWidget(b_save)
-            scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(page)
-            self.agent_tabs.addTab(scroll, a['id'])
-            self._agent_pages.append((a['id'], self.agent_tabs.count()-1))
-
     def _set_agent_enabled(self, agent_id, on):
         try:
             agents, _ = self._agents_mod()
@@ -1621,27 +1424,6 @@ class BlackHorse(QMainWindow):
             self.refresh_agents()
         except Exception as e:
             self.house_view.setPlainText(f"toggle error: {e}")
-
-    def _select_agent_by_id(self, agent_id):
-        try:
-            self.agent_list.setCurrentRow(next(i for i,a in enumerate(self._agent_rows) if a['id']==agent_id))
-            for aid, idx in self._agent_pages:
-                if aid == agent_id:
-                    self.agent_tabs.setCurrentIndex(idx)
-                    return
-        except Exception:
-            pass
-
-    def agent_toggle(self, on):
-        a = self._selected_agent()
-        if not a:
-            return
-        try:
-            agents, _ = self._agents_mod()
-            agents.set_enabled(a["id"], on)
-            self.refresh_agents()
-        except Exception as e:
-            self.agent_status.setText(f"toggle error: {e}")
 
     def house_decide(self):
         try:

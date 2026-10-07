@@ -125,7 +125,8 @@ def _summary(obs: dict) -> str:
 
 def note(pair="DOT/USD", use_latest=False) -> dict:
     if use_latest:
-        sig = _load_signal()
+        import signals
+        sig = signals.load(pair) or _load_signal()
         if not sig or not sig.get("available"):
             return {"ok": False, "error": "no signal_latest.json available"}
     else:

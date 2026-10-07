@@ -56,17 +56,25 @@ def status() -> dict:
 
 def open_position(agent: str, pair: str, side: str, entry: float, qty: float,
                   stop: float = None, target: float = None, fee_pct: float = 0.26,
-                  venue: str = None, note: str = None, mode: str = "PAPER", interval=None, edge_cell=None) -> dict:
+                  venue: str = None, note: str = None, mode: str = "PAPER", interval=None, edge_cell=None,
+                  fee: float = None, entry_snapshot: dict = None) -> dict:
     d = _load()
-    fee = entry * qty * (fee_pct / 100)
+    if fee is None:
+        fee = entry * qty * (fee_pct / 100)
     pos = {"id": f"pos_{int(time.time()*1000)}", "agent": agent, "pair": pair, "side": side,
            "entry": entry, "qty": qty, "stop": stop, "target": target, "mode": mode,
            "fee_entry": fee, "opened": time.time(), "venue": venue, "note": note, "mark": entry,
-           "interval": interval, "edge_cell": edge_cell}
+           "interval": interval, "edge_cell": edge_cell,
+           "entry_snapshot": entry_snapshot}
     d["positions"].append(pos)
     d["fees_paid"] += fee
     _save(d)
     _log({"type": "open", "position": pos})
+    try:
+        import store
+        store.position_open(pos)
+    except Exception:
+        pass
     return pos
 
 
@@ -76,6 +84,8 @@ def mark(pair: str, price: float) -> list:
     for p in list(d["positions"]):
         if p["pair"] != pair:
             continue
+        if p.get("mode") == "LIVE":
+            continue          # NO STOPS / ledger-only exits for real money: exits.py sells for real
         reason = None
         if p["side"] == "BUY":
             if p.get("stop") and price <= p["stop"]:
@@ -101,7 +111,8 @@ def mark(pair: str, price: float) -> list:
     return [{"id": pos_id, "reason": r, "price": price} for r, pos_id in hit]
 
 
-def close_position(pos_id: str, price: float, reason: str = "manual", fee_pct: float = 0.26) -> dict:
+def close_position(pos_id: str, price: float, reason: str = "manual", fee_pct: float = 0.26,
+                   fee: float = None) -> dict:
     d = _load()
     pos = next((p for p in d["positions"] if p["id"] == pos_id), None)
     if not pos:
@@ -109,7 +120,7 @@ def close_position(pos_id: str, price: float, reason: str = "manual", fee_pct: f
         return {"ok": False, "error": "position not found"}
     mult = 1 if pos["side"] == "BUY" else -1
     gross = (price - pos["entry"]) * pos["qty"] * mult
-    fee_exit = price * pos["qty"] * (fee_pct / 100)
+    fee_exit = fee if fee is not None else price * pos["qty"] * (fee_pct / 100)
     net = gross - pos["fee_entry"] - fee_exit
     d["positions"] = [p for p in d["positions"] if p["id"] != pos_id]
     d["realized_pnl"] += net
@@ -123,6 +134,12 @@ def close_position(pos_id: str, price: float, reason: str = "manual", fee_pct: f
            "gross": round(gross, 8), "fees": round(pos["fee_entry"] + fee_exit, 8),
            "net": round(net, 8)}
     _log(rec)
+    try:
+        import store
+        store.position_close(pos_id, price, round(net, 8), round(pos["fee_entry"] + fee_exit, 8),
+                             fee_exit, reason, pos.get("exit_txid"))
+    except Exception:
+        pass
     return {"ok": True, "net": round(net, 8), "record": rec}
 
 
@@ -147,3 +164,33 @@ if __name__ == "__main__":
         print(json.dumps(history(lim), indent=2))
     else:
         print(json.dumps(status(), indent=2))
+
+
+def reconcile_live(tol_pct: float = 1.0) -> dict:
+    """Compare the ledger's open LIVE positions to the real exchange balance.
+    The exchange is the truth. Writes logs/ledger_mismatch.json and returns
+    {"ok": bool, "mismatches": [...]}. Read-only on the exchange."""
+    try:
+        import execute
+        bal = execute.kraken_balance()
+    except Exception as e:
+        return {"ok": None, "error": f"exchange unavailable: {e}"}
+    if not bal:                                   # empty = the read failed, NOT "you hold nothing"
+        return {"ok": None, "error": "balance unavailable (read failed) - not compared"}
+    ledger = {}
+    for p in open_positions():
+        if p.get("mode") == "LIVE" and str(p.get("side")).upper() == "BUY":
+            base = p["pair"].split("/")[0].upper()
+            ledger[base] = ledger.get(base, 0.0) + float(p["qty"])
+    out = []
+    for base, q in ledger.items():
+        have = float(bal.get(base, 0) or 0)
+        if q > 0 and abs(have - q) / q * 100 > tol_pct:
+            out.append({"asset": base, "ledger_qty": round(q, 8), "exchange_qty": round(have, 8),
+                        "note": "exchange holds LESS than ledger" if have < q else "exchange holds MORE than ledger"})
+    res = {"ok": not out, "mismatches": out, "ts": time.time()}
+    try:
+        (LEDGER.parent / "ledger_mismatch.json").write_text(json.dumps(res, indent=2))
+    except OSError:
+        pass
+    return res

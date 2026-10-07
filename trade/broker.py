@@ -171,6 +171,8 @@ def decide_all(verdict=None, pair=None) -> dict:
                     approved.append({"agent": a["id"], "name": a.get("name"), "profile": a.get("profile"),"mode": a.get("mode"),
                                      "action": d["action"], "channel": d.get("channel"), "entry": d.get("entry"),
                                      "stop": d.get("stop"), "target": d.get("target"), "size_quote": d.get("size_quote"),
+                                     "order_type": d.get("order_type"), "expiry_s": d.get("expiry_s"),
+                                     "outlay_quote": d.get("outlay_quote"), "fee_reserve_pct": d.get("fee_reserve_pct"),
                                      "risk_quote": d.get("risk_quote"), "rr": d.get("rr"), "score": d.get("score"),
                                      "expected_net_pct": d.get("expected_net_pct"), "evidence": d.get("evidence"),
                                      "explain": d.get("explain"), "status": "UNVALIDATED", "heart": "ALLOW"})

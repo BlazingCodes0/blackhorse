@@ -12,6 +12,14 @@ def assess_size(pair, entry, size_quote):
             "XRP/USD": "XRP"}.get(pair, "BASE")
     min_quote = MIN_QUOTE.get(pair, 5.0)
     min_base = MIN_BASE.get(pair, 0.001)
+    try:                                   # the exchange's REAL minimums (cached 24h) beat the guesses
+        import fees
+        info = fees.pair_info(pair)
+        if info.get("ordermin"):
+            min_base = float(info["ordermin"])
+            min_quote = float(info.get("costmin") or 0)
+    except Exception:
+        pass
     if not ent:
         return "no valid entry price"
     if quote <= 0:

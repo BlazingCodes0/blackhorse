@@ -1,0 +1,5 @@
+{
+  "comment": "BASE (Tier 1, entry-level) spot fees per exchange. NOT VIP/volume-discounted. Fallback used only if the exchange API can't be read. Brain/owner refresh via trade/fees.py refresh.",
+  "kraken": {"maker_pct": 0.40, "taker_pct": 0.80, "checked": "2026-10-07",
+             "source": "https://www.kraken.com/features/fee-schedule (Spot Crypto Tier 1) + private TradeVolume maxfee"}
+}

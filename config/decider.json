@@ -9,7 +9,7 @@
   "stop_buffer_pct": 0.6,
   "fee_pct_per_side": 0.26,
   "require_tide_context": true,
-  "require_proven_edge": true,
+  "require_proven_edge": false,
   "spread_flat_epsilon": 0.02,
   "spread_trusted_interval": "15m",
   "require_ma_cross_agreement": false,
@@ -17,5 +17,14 @@
   "rsi_buy_block_above": 70.0,
   "rsi_sell_block_below": 30.0,
   "rsi_buy_min": 0.0,
-  "tag": "UNVALIDATED — not proven; paper only until a fee-honest backtest passes"
+  "tag": "UNVALIDATED \u2014 not proven; paper only until a fee-honest backtest passes",
+  "require_spread_agreement": false,
+  "mtf_buy_override": true,
+  "entry_order_type": "limit",
+  "entry_expiry_seconds": 600,
+  "exit_price_sets": [
+    "average"
+  ],
+  "exit_min_net_pct": 0.25,
+  "exit_poll_seconds": 15
 }
