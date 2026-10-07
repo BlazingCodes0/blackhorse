@@ -751,3 +751,55 @@ Levers, in impact order (user is deciding which to pull):
    ~300s for the rest; open positions already get 15s exit polling cheaply.
 Optional later: cheap Ticker prefilter (1 call, all pairs) — only run the deep
 SignalBot sweep when price actually moved. Nothing here is committed yet.
+
+==============================================================================
+## SESSION 10c (2026-10-07) — PLAN: MTF price-fusion simulation (consensus)
+==============================================================================
+Owner decision (discussion -> design):
+- Agents + strategies = an ARRAY of intervals the user chooses freely.
+- Single interval -> trade that interval; multiple -> they are MERGED into ONE
+  consensus decision, tuned for profit + edge-finding.
+- THE FUSION HYPOTHESIS: 15m is trusted ONLY for timing confirmation (its MA
+  spread / MA cross / entry momentum), but its PRICE averages/spread are "terrible
+  and not accurate to trade" — the tradeable PRICE must come from higher TFs
+  (60m/240m floor-low-high-roof, advisor). So one BUY = 15m timing gate + HTF
+  price anchor/levels. This also explains the session-10 finding (240m BUY died
+  on the fee gate: target `high` 1.1143 vs entry 1.1114 — a small-TF-tight target;
+  HTF levels carry the room to clear fees).
+
+RULE the user set: RUN A SIMULATION BEFORE implementing anything. See if the
+fusion has any real use first. No live/trading code is to be touched.
+
+DATA REALITY (verified today):
+- Real SignalBot rows exist per interval (logs/sb_rows_*_dump.json, 671 rows
+  each, key 50..720 = shared per-interval bar index) with real forward returns
+  (return1..20, mfe, mae) from the REAL engine (saveRange* rangelog + saveSmart*
+  via SignalBot/utils/analyzeLogs3LowCodex.js loader).
+- BUT rows carry NO timestamps, and candle dumps (logs/candles_*.json) are a
+  DIFFERENT window (spot-checked: key is NOT shared wall-clock across intervals).
+  -> CROSS-INTERVAL FUSION CANNOT reuse the existing row dumps.
+- FIX: re-run the REAL dumper (SignalBot/run_pair_rows.js — getOHLC +
+  smartBackTest + QubitFlow.dryRunner) for DOT <amount>/60/240 with a one-line patch
+  that ALSO writes times<IV>.json (key -> candle open time). Non-destructive:
+  backup current logs3Low rows + logs/sb_rows.json, restore after.
+
+WHAT I'M ABOUT TO BUILD (research-only, does not touch live paths):
+1. Patch SignalBot/run_pair_rows.js to emit times<iv>.json (key->candle time).
+2. Re-dump DOT 15m/60m/240m rows into SignalBot/logs3Low (loader's fixed file
+   names; backup originals first), flatten with the REAL loader, keep keys + a
+   key->time map, restore the originals.
+3. NEW trade/mtf_fusion_sim.py — pure simulation, logs only:
+   - Align 15m/60m/240m rows by epoch (each 15m row looks up the 60m/240m bar
+     covering that time).
+   - FUSED BUY at time t iff: 15m timing gate (strength<=max, rangeSignal=BUY,
+     zone floor/low, spread not against) AND HTF consensus (60m and/or 240m not
+     in sell zone / in buy zone).
+   - PRICE from HTF: enter at the higher-TF low/floor level (limit; fill only if
+     traded), target = HTF high/roof; NOT the 15m tight averages.
+   - Simulate forward per real aligned bars per horizon (1/3/5/10 HTF bars),
+     net = round-trip fees (real per-pair rates from config/exchange_fees.json:
+     DOT ~0.004 mkr + 0.008 tkr) + slippage. Compare cells: 15m-only, 60m-only,
+     240m-only, FUSED(15m timing + HTF levels). Win%, avg net %, n.
+   - Write logs/mtf_fusion_report.json + console table.
+4. Report honestly to the owner + save findings back here. NOTHING wired into
+   loop/decider/broker/agents until the owner sees numbers and says go.
