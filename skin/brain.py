@@ -505,7 +505,7 @@ def retry_outbox(max_per_sweep: int = 1) -> str:
             sess = trade_session()
         ans = ask(e["q"], force=True, session=sess, kind=e.get("kind", "chat"))
         e["attempts"] = e.get("attempts", 0) + 1
-        e["done"] = not ans.startswith("(brain error")
+        e["done"] = not (ans.startswith("(brain error") or ans.startswith("(brain offline"))
         e["last"] = ans[:200]
         # rewrite that line in place (small file)
         try:
@@ -526,6 +526,25 @@ def retry_outbox(max_per_sweep: int = 1) -> str:
             break
     return f"retried {done}"
 
+
+
+_NET_CACHE = {"ts": 0.0, "ok": None}
+
+def _online(max_age: float = 30.0) -> bool:
+    """Cheap connectivity gate, cached ~30s. When False, callers must skip
+    LLM work instead of spawning opencode and hanging to the timeout."""
+    now = time.time()
+    if _NET_CACHE["ok"] is not None and now - _NET_CACHE["ts"] < max_age:
+        return _NET_CACHE["ok"]
+    try:
+        import socket
+        with socket.create_connection(("1.1.1.1", 53), timeout=2):
+            ok = True
+    except OSError:
+        ok = False
+    _NET_CACHE["ts"] = now
+    _NET_CACHE["ok"] = ok
+    return ok
 
 
 def _ask_via_api(session: str, full: str, timeout: int = 180) -> str | None:
@@ -629,6 +648,12 @@ def ask(msg: str, force: bool = False, session: str | None = None, kind: str = "
     if session is None and kind in ("trade", "console"):
         return "(brain session missing — trade/console needs its own provisioned session; refusing to leak into guardian chat)"
     sess = session or SESSION
+    if not _online():
+        answer = "(brain offline — no internet; skipped this cycle, will retry when back online)"
+        _record_health(False, "offline")
+        _outbox_add(msg, kind, sess, "offline")
+        _log(msg, answer, kind=kind, session=sess)
+        return answer
     timeout = int(settings.load().get("brain_timeout_seconds", 180))
     try:
         retry_s = int(settings.load().get("brain_retry_seconds", 20))

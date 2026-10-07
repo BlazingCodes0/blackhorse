@@ -26,7 +26,7 @@ def _node() -> str:
     return shutil.which("node") or "node"
 
 
-def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180, channels=None, merge_daytrade=False) -> dict:
+def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180, channels=None, merge_daytrade=False, out=None) -> dict:
     if exchange is None:
         try:
             import exchanges
@@ -68,11 +68,65 @@ def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180, channels=N
                 snap["dayTrade_ts"] = snap2.get("ts")
         except Exception:
             pass
-    LATEST.parent.mkdir(parents=True, exist_ok=True)
-    LATEST.write_text(json.dumps(snap, indent=2))
+    out = Path(out) if out else LATEST
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(snap, indent=2))
     return snap
 
 
+
+def _spread_ma(raw: dict, ch: str) -> dict:
+    """smartbot-style ma10/ma30/maSpreadPct — smartbot aliases ma10=maFast,
+    ma30=maSlow (MA20/MA50), maSpreadPct=(fast-slow)/slow*100, signal at ±3%."""
+    mx = ((raw.get("signals") or {}).get("maCrossTripple") or {}).get(ch) or {}
+    fast, slow = mx.get("fast"), mx.get("slow")
+    def _last(v):
+        if isinstance(v, list):
+            v = [x for x in v if isinstance(x, (int, float))]
+            v = v[-1] if v else None
+        return v if isinstance(v, (int, float)) else None
+    fast, slow = _last(fast), _last(slow)
+    if fast is None or slow in (None, 0):
+        return {"available": False}
+    pct = (fast - slow) / slow * 100
+    signal = "bullish" if pct >= 3 else ("bearish" if pct <= -3 else "neutral")
+    return {"available": True, "ma10": fast, "ma30": slow,
+            "diff": round(fast - slow, 6), "diffPct": round(pct, 4), "signal": signal}
+
+def _spread_verdict(m) -> dict:
+    """Smart 15m spread read: separate genuine drift from chop/noise."""
+    a = m.get("maSpreadsAnalysis") or {}
+    bars = a.get("bars") or 0
+    bias = a.get("directionBias") or 0
+    chop = a.get("chopLevel") or 0
+    strength = a.get("strength") or 0
+    if bars < 8:
+        v = "insufficient history"
+    elif chop >= 0.6:
+        v = "choppy (noise)"
+    elif bias < 0.6:
+        v = "noise (no dominant direction)"
+    elif strength < 0.35:
+        v = "weak drift"
+    elif a.get("trend") == "up":
+        v = "improving" + (" (strong)" if strength >= 0.6 else "")
+    else:
+        v = "weakening" + (" (strong)" if strength >= 0.6 else "")
+    return {"verdict": v, "trend": a.get("trend"), "bars": bars,
+            "directionBias": round(bias, 3), "chopLevel": round(chop, 3),
+            "strength": round(strength, 3)}
+
+def _ma_verdict(mx: dict) -> str:
+    """Gap-size based cross verdict — a 0.02% gap is a coil, not a bias."""
+    gap = (mx or {}).get("gap_pct")
+    if not isinstance(gap, (int, float)):
+        return "no data"
+    g = abs(gap)
+    if g < 0.15:
+        return "coil (gap ~0, noise)"
+    if g < 0.5:
+        return f"borderline {mx.get('bias')} bias"
+    return f"real {mx.get('bias')} bias"
 
 def _ma_cross(mx) -> dict:
     """Compact MA cross read: latest fast(ma20)/slow(ma50), who is on top, % gap."""
@@ -136,11 +190,15 @@ def normalize(raw: dict, meta: dict) -> dict:
                 "spreadCount": (m.get("maSpreadRun") or {}).get("count"),
                 "maSpreadRun": m.get("maSpreadRun"),
                 "maSpreadsAnalysis": m.get("maSpreadsAnalysis"),
+                "spreadVerdict": _spread_verdict(m) if str(s.get("interval")) == "15m" else None,
                 "stopLoss": m.get("stopLoss"), "takeProfit": m.get("takeProfit"),
             },
             "RSI": s.get("RSI"),
+            # smartbot-style ma10/ma30 spread (aliases of maFast/maSlow)
+            "spreadMA": _spread_ma(raw, ch),
             # REAL MA20/MA50 cross data straight from SignalBot
-            "maCross": _ma_cross((raw.get("signals") or {}).get("maCrossTripple", {}).get(ch)),
+            "maCross": {**_ma_cross((raw.get("signals") or {}).get("maCrossTripple", {}).get(ch)),
+                        "verdict": _ma_verdict(_ma_cross((raw.get("signals") or {}).get("maCrossTripple", {}).get(ch))) if str(s.get("interval")) == "15m" else None},
             # advisor lanes — NOTE which side is missing (null/0/empty = no flow)
             "advisor": {
                 "buy": buy, "sell": sell,
