@@ -937,3 +937,9 @@ done.
 - On save: derive strategy label from intervals (swing if 15m/60m/240m, daytrade if 5m present, else custom), write strategy_intervals, strategy, channels. 
 - Swing/daytrade are examples but intervals are fully editable per agent. Profiles remain risk posture only (separated from strategy). 
 - Commit 2bd0699. Snapshot v1.10.
+
+### 2026-10-07 SESSION 10j — Profiles filtered by interval set (contextual)
+- Profiles now filtered by intervals: has 5m -> quick, scalp15; else swing/no-5m -> slow, lifecycle. 
+- Profile block sits under Strategy+Intervals (driven by selected intervals). Prevents obvious mismatches.
+- Backend PROFILES unchanged; only UI filtering.
+- Commit + snapshot v1.11.
