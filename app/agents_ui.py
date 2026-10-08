@@ -22,6 +22,40 @@ BH = Path.home() / "blackhorse"
 GREEN, RED, GREY, AMBER = "#16a34a", "#dc2626", "#9ca3af", "#d97706"
 
 
+def _intervals_to_slots(intervals):
+    iv = [str(x).strip() for x in (intervals or [])]
+    has5 = any(x == '5m' for x in iv)
+    slots = []
+    for x in iv:
+        if x == '5m':
+            slots.append('ripple5')
+        elif x == '15m':
+            slots.append('wave15' if has5 else 'ripple')
+        elif x == '60m':
+            slots.append('tide60' if has5 else 'wave')
+        elif x == '240m' or x == '1440m':
+            slots.append('tide')
+        else:
+            slots.append(x)
+    seen = set(); out = []
+    for s in slots:
+        if s not in seen:
+            seen.add(s); out.append(s)
+    return out
+
+
+def _slots_to_intervals(slots):
+    m = {'ripple':'15m','wave':'60m','tide':'240m','ripple5':'5m','wave15':'15m','tide60':'60m'}
+    iv = []
+    for s in (slots or []):
+        iv.append(m.get(s, s))
+    seen = set(); out = []
+    for x in iv:
+        if x not in seen:
+            seen.add(x); out.append(x)
+    return out
+
+
 # ------------------------------------------------------------------ data
 def _jload(p, d):
     try:
@@ -136,8 +170,8 @@ SETTINGS = [
     ]),
     ("Where it trades", [
         ("pairs", "Pairs", "list", "agent", "Comma list, e.g. DOT/USD,ETH/USD. Empty = every pair."),
-        ("strategy", "Strategy", "combo:swing,daytrade,custom", "policy", "swing=15m/60m/240m (ripple,wave,tide); daytrade=5m/15m/60m lanes (ripple5,wave15,tide60); custom = choose channels."),
-        ("channels", "Channels", "list", "policy", "slot mapping: ripple=15m, wave=60m, tide=240m; wave15=15m(dayT), ripple5=5m, tide60=60m(dayT)"),
+        ("strategy", "Strategy", "combo:swing,daytrade,custom", "policy", "Interval combo (editable). swing/daytrade are examples."),
+        ("intervals", "Intervals", "list", "policy", "Raw intervals e.g. 15m,60m,240m or 5m,15m,60m"),
         ("capital", "Capital $", "float", "agent", "Budget this agent may size from (bounded by real free cash)."),
     ]),
     ("Entry (buy)", [
@@ -527,51 +561,75 @@ class AgentsMixin:
         page = QWidget()
         pv = QVBoxLayout(page)
         self._agent_fields = {}
+        # Strategy/Intervals block first
+        strat_box = QGroupBox("Strategy — interval combination (editable, per agent)")
+        sg = QGridLayout(strat_box)
+        sg.setHorizontalSpacing(14); sg.setVerticalSpacing(8)
+        # build strategy/intervals fields first
+        pol_cur = pol
+        # strategy
+        ch = pol_cur.get('channels') or []
+        iv = pol_cur.get('strategy_intervals') or _slots_to_intervals(ch)
+        strat_cur = pol_cur.get('strategy')
+        if strat_cur not in ('swing','daytrade','custom'):
+            # infer
+            if iv == ['15m','60m','240m'] or iv == ['5m','15m','60m']:
+                pass  # will set below
+            if set(iv) == {'15m','60m','240m'} and len(iv)==3:
+                strat_cur = 'swing'
+            elif '5m' in iv:
+                strat_cur = 'daytrade'
+            else:
+                strat_cur = 'custom' if iv else 'swing'
+        # strategy row 0
+        sl = QLabel('Strategy'); sl.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
+        sw = QComboBox(); sw.addItems(['swing','daytrade','custom']); sw.setCurrentText(strat_cur or 'swing')
+        sg.addWidget(sl,0,0); sg.addWidget(sw,0,1)
+        self._agent_fields['strategy'] = (sw,'combo:swing,daytrade,custom','policy', strat_cur)
+        # intervals row 1
+        il = QLabel('Intervals'); il.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter); il.setToolTip('Raw intervals e.g. 15m,60m,240m')
+        iw = QLineEdit(','.join(iv) if iv else '15m,60m,240m')
+        iw.setToolTip('Raw intervals e.g. 15m,60m,240m or 5m,15m,60m')
+        sg.addWidget(il,0,3); sg.addWidget(iw,0,4)
+        self._agent_fields['intervals'] = (iw,'list','policy', iv)
+        sg.setColumnMinimumWidth(2,24); sg.setColumnStretch(1,1); sg.setColumnStretch(4,1)
+        pv.addWidget(strat_box)
+        # Profile block next
         pv.addWidget(self._build_profile_group(a))
         for title, fields in SETTINGS:
+            # skip Where it trades block (already handled)
+            if title == 'Where it trades':
+                continue
             g = QGroupBox(title)
             grid = QGridLayout(g)
             grid.setHorizontalSpacing(14)
             grid.setVerticalSpacing(8)
             for i, (key, label, kind, where, tip) in enumerate(fields):
+                if key == 'strategy' or key == 'intervals' or key == 'channels':
+                    continue  # handled above
                 r, c = divmod(i, 2)
-                cur = a.get(key) if where == "agent" else pol.get(key)
+                cur = a.get(key) if where == 'agent' else pol_cur.get(key)
                 lab = QLabel(label)
                 lab.setToolTip(tip)
                 lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                if kind.startswith("combo:"):
+                if kind.startswith('combo:'):
                     w = QComboBox()
-                    items = kind.split(":")[1].split(",")
+                    items = kind.split(':')[1].split(',')
                     w.addItems(items)
-                    # detect current strategy from channels if strategy not set
-                    if key == "strategy" and (cur is None or str(cur) not in items):
-                        ch = pol.get("channels") or []
-                        if ch == ["ripple","wave","tide"]:
-                            cur = "swing"
-                        elif ch == ["wave15","ripple5","tide60"]:
-                            cur = "daytrade"
-                        else:
-                            cur = "custom"
                     w.setCurrentText(str(cur or w.itemText(0)))
-                elif kind == "bool":
-                    w = QCheckBox(label)
-                    w.setChecked(bool(cur))
-                    w.setMinimumWidth(0)
+                elif kind == 'bool':
+                    w = QCheckBox(label); w.setChecked(bool(cur)); w.setMinimumWidth(0)
                 else:
-                    txt = ",".join(cur) if isinstance(cur, list) else ("" if cur is None else str(cur))
+                    txt = ','.join(cur) if isinstance(cur, list) else ('' if cur is None else str(cur))
                     w = QLineEdit(txt)
-                w.setMinimumWidth(150)
-                w.setToolTip(tip)
-                if kind == "bool":
+                w.setMinimumWidth(150); w.setToolTip(tip)
+                if kind == 'bool':
                     grid.addWidget(w, r, 0, 1, 4)
                 else:
-                    grid.addWidget(lab, r, c * 3)
-                    grid.addWidget(w, r, c * 3 + 1)
-                if c == 0:
-                    grid.setColumnMinimumWidth(2, 24)
+                    grid.addWidget(lab, r, c*3); grid.addWidget(w, r, c*3+1)
+                if c == 0: grid.setColumnMinimumWidth(2,24)
                 self._agent_fields[key] = (w, kind, where, cur)
-            grid.setColumnStretch(1, 1)
-            grid.setColumnStretch(4, 1)
+            grid.setColumnStretch(1,1); grid.setColumnStretch(4,1)
             pv.addWidget(g)
         row = QHBoxLayout()
         b_save = QPushButton("Save to agent policy")
@@ -594,73 +652,94 @@ class AgentsMixin:
     def _save_agent_settings(self, aid):
         agents, _ = self._agents_mod()
         changed, errs = [], []
-        # get strategy choice if present
-        strat = None
-        if "strategy" in self._agent_fields:
+        # read strategy and intervals
+        strat = 'custom'
+        iv_list = []
+        if 'strategy' in self._agent_fields:
             try:
-                sw, sk, swher, sold = self._agent_fields["strategy"]
-                strat = (sw.currentText() if hasattr(sw, 'currentText') else str(sold)).strip().lower()
+                sw, sk, swher, sold = self._agent_fields['strategy']
+                strat = (sw.currentText() if hasattr(sw,'currentText') else str(sold)).strip().lower()
             except Exception:
-                strat = None
-        for key, (w, kind, where, old) in self._agent_fields.items():
+                strat = 'custom'
+        if 'intervals' in self._agent_fields:
             try:
-                if kind == "bool":
-                    val = bool(w.isChecked())
-                    same = old is not None and bool(old) == val
+                iw, ik, iwhere, iold = self._agent_fields['intervals']
+                raw = (iw.text() if hasattr(iw,'text') else str(iold)).strip()
+                iv_list = [x.strip() for x in raw.split(',') if x.strip()]
+            except Exception:
+                iv_list = []
+        # if empty, derive from strategy
+        if not iv_list:
+            if strat == 'swing':
+                iv_list = ['15m','60m','240m']
+            elif strat == 'daytrade':
+                iv_list = ['5m','15m','60m']
+            else:
+                iv_list = _slots_to_intervals([]) or ['15m','60m','240m']
+        # normalize strategy label from intervals if it matches known sets
+        ivs = iv_list
+        if ivs == ['15m','60m','240m'] or sorted(ivs) == sorted(['15m','60m','240m']):
+            strat_lbl = 'swing'
+        elif '5m' in ivs or ivs == ['5m','15m','60m'] or sorted(ivs) == sorted(['5m','15m','60m']):
+            strat_lbl = 'daytrade'
+        else:
+            strat_lbl = strat if strat in ('swing','daytrade') else 'custom'
+        # translate to slots
+        slots = _intervals_to_slots(ivs)
+        # write strategy/intervals/channels
+        try:
+            agents.set_override(aid, 'strategy_intervals', ivs)
+            changed.append('intervals')
+        except Exception as e:
+            errs.append(f'intervals:{e}')
+        try:
+            agents.set_override(aid, 'strategy', strat_lbl)
+            changed.append('strategy')
+        except Exception as e:
+            errs.append(f'strategy:{e}')
+        try:
+            agents.set_override(aid, 'channels', slots)
+            changed.append('channels')
+        except Exception as e:
+            errs.append(f'channels:{e}')
+        # handle other fields
+        for key, (w, kind, where, old) in self._agent_fields.items():
+            if key in ('strategy','intervals'):
+                continue
+            try:
+                if kind == 'bool':
+                    val = bool(w.isChecked()); same = old is not None and bool(old) == val
                 else:
                     raw = (w.currentText() if isinstance(w, QComboBox) else w.text()).strip()
-                    if kind == "list":
-                        val = [x.strip() for x in raw.split(",") if x.strip()]
-                        if key == "pairs":
-                            val = [x.upper() for x in val]
+                    if kind == 'list':
+                        val = [x.strip() for x in raw.split(',') if x.strip()]
+                        if key == 'pairs': val = [x.upper() for x in val]
                         same = val == (old or [])
-                    elif kind == "float":
-                        if raw == "":
-                            continue
+                    elif kind == 'float':
+                        if raw == '': continue
                         val = float(raw); same = old is not None and float(old) == val
-                    elif kind == "int":
-                        if raw == "":
-                            continue
+                    elif kind == 'int':
+                        if raw == '': continue
                         val = int(float(raw)); same = old is not None and int(float(old)) == val
                     else:
                         val = raw; same = str(old) == val
-                # strategy is metadata; we may also auto-set channels if custom not intended
-                if key == "strategy":
-                    if same and strat != "custom":
-                        pass  # still maybe enforce channels for known strategies
-                    # store strategy as policy override for visibility
-                    try:
-                        agents.set_override(aid, key, strat or val)
-                    except Exception:
-                        pass
-                    changed.append(key) if not same else None
-                    # auto-set channels for non-custom
-                    if strat == "swing":
-                        agents.set_override(aid, "channels", ["ripple","wave","tide"])
-                        changed.append("channels")
-                    elif strat == "daytrade":
-                        agents.set_override(aid, "channels", ["wave15","ripple5","tide60"])
-                        changed.append("channels")
-                    # custom: do not overwrite channels
-                    continue
-                if same:
-                    continue
-                if key == "pairs":
+                if same: continue
+                if key == 'pairs':
                     agents.set_pairs(aid, val)
-                elif key == "capital":
+                elif key == 'capital':
                     agents.set_capital(aid, val, allow_over=True)
                 else:
                     agents.set_override(aid, key, val)
                 changed.append(key)
             except Exception as e:
-                errs.append(f"{key}: {e}")
+                errs.append(f'{key}:{e}')
         if errs:
             self.ag_save_msg.setText(f"<span style='color:{RED}'>error — {'; '.join(errs)}</span>")
         else:
-            self.ag_save_msg.setText(f"<span style='color:{GREEN}'>saved {', '.join(set(changed)) or 'nothing changed'}</span>")
+            self.ag_save_msg.setText(f"<span style='color:{GREEN}'>saved {', '.join(sorted(set(changed))) or 'nothing changed'}</span>")
         if changed:
             self.refresh_agents()
-            self.ag_save_msg.setText(f"<span style='color:{GREEN}'>saved {', '.join(set(changed))}</span>")
+            self.ag_save_msg.setText(f"<span style='color:{GREEN}'>saved {', '.join(sorted(set(changed)))}</span>")
 
     # ---------------------------------------------------------------- orders tab
     def _tick_agent_orders(self):
