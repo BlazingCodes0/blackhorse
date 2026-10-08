@@ -609,7 +609,46 @@ class AgentsMixin:
         sg.setColumnMinimumWidth(2,24); sg.setColumnStretch(1,1); sg.setColumnStretch(4,1)
         pv.addWidget(strat_box)
         # Profile block under strategy (driven by intervals)
-        pv.addWidget(self._build_profile_group(a, iv))
+        prof_w = self._build_profile_group(a, iv)
+        pv.addWidget(prof_w)
+        # reactive wiring
+        def _update_intervals_from_strat():
+            s = sw.currentText().strip().lower()
+            if s == 'swing':
+                iw.setText('15m,60m,240m')
+            elif s == 'daytrade':
+                iw.setText('5m,15m,60m')
+            # custom: do not overwrite
+            _refresh_profile_from_intervals()
+        def _refresh_profile_from_intervals():
+            # rebuild profile combo for current intervals
+            try:
+                iv_cur = [x.strip() for x in iw.text().split(',') if x.strip()]
+                if hasattr(self, '_ag_profile_combo'):
+                    self._ag_profile_combo.clear()
+                    allowed = self._profiles_for_intervals(iv_cur)
+                    agents, _ = self._agents_mod()
+                    profs = agents.profiles()
+                    for k in allowed:
+                        if k in profs:
+                            p = profs[k]; self._ag_profile_combo.addItem(f"{k} — {p['label']}", k)
+                    if self._ag_profile_combo.count()==0:
+                        for k,p in profs.items():
+                            self._ag_profile_combo.addItem(f"{k} — {p['label']}", k)
+                    # pick first if current not allowed
+                    curp = a.get('profile')
+                    if curp not in allowed and self._ag_profile_combo.count()>0:
+                        self._ag_profile_combo.setCurrentIndex(0)
+                    else:
+                        for j in range(self._ag_profile_combo.count()):
+                            if self._ag_profile_combo.itemData(j)==curp:
+                                self._ag_profile_combo.setCurrentIndex(j); break
+                    if a.get('kind')=='trading':
+                        self._profile_preview(a['id'])
+            except Exception:
+                pass
+        sw.currentIndexChanged.connect(_update_intervals_from_strat)
+        iw.editingFinished.connect(_refresh_profile_from_intervals)
         for title, fields in SETTINGS:
             # skip Where it trades block (already handled)
             if title == 'Where it trades':
