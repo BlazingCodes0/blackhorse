@@ -924,6 +924,9 @@ done.
 - Strategy selector remains in UI as separate policy field (interval combo); stores policy.strategy + auto-fills channels for non-custom.
 - Clarified orthogonality: profile changes sizing/risk rules; strategy changes which channels/intervals are considered.
 - Commit: fc2559e. Snapshot v1.9.
-
-### 2026-10-07 SESSION 10i — Clarify Profile vs Strategy + mapping
-- Clarified: Profile = risk posture (separate from Strategy). Strategy = interval combo (channels). Channels are slot names with backend mapping (ripple=15m, wave=60m, tide=240m; wave15/ripple5/tide60 = dayTrade lanes). Strategy dropdown (swing/daytrade/custom) writes policy.strategy + auto-fills channels; custom allows free edit. Data availability for dayTrade lanes requires merge_daytrade (global).
+| Concept | What it controls | Where set (UI) | Where stored | Notes |
+|---|---|---|---|---|
+| Profile | Risk posture: risk%, max_position%, entry/exit thresholds, stop caps, require_proven_edge, order type, etc. | Agents → Settings → Profile dropdown (risk posture presets) | agents[].profile; profile values merged via PROFILES[profile].cfg; agent.policy_overrides can shadow | Orthogonal to strategy. Changing profile does NOT change channels/strategy. set_profile doesn’t touch channels/strategy. |
+| Strategy | Interval combination (which channels to consider) per agent | Agents → Settings → Where it trades → Strategy (swing/daytrade/custom) | policy_overrides.strategy + policy_overrides.channels (slots) | swing = [ripple,wave,tide] (15m/60m/240m). daytrade = [wave15,ripple5,tide60] (adds 5m/15m/60m). custom = free edit of Channels. |
+| Channels | Slot names that map to concrete intervals | When Strategy=custom, edit Channels field directly | policy_overrides.channels | Mapping (slot→interval): ripple→15m, wave→60m, tide→240m, ripple5→5m, wave15→15m (dayTrade), tide60→60m. Hardcoded in signalbot/sidecar. |
+| Intervals (global) | Which raw intervals the sidecar actually computes for pairs | Config (signal_setup.json, per pair) + loop forces merge_daytrade | config/signal_setup.json, trade/loop.py | Global, not per-agent. To get 5m you need dayTrade slots + global merge/dayTrade intervals computed. |
