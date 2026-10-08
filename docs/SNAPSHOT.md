@@ -924,3 +924,6 @@ done.
 - Strategy selector remains in UI as separate policy field (interval combo); stores policy.strategy + auto-fills channels for non-custom.
 - Clarified orthogonality: profile changes sizing/risk rules; strategy changes which channels/intervals are considered.
 - Commit: fc2559e. Snapshot v1.9.
+
+### 2026-10-07 SESSION 10i — Clarify Profile vs Strategy + mapping
+- Clarified: Profile = risk posture (separate from Strategy). Strategy = interval combo (channels). Channels are slot names with backend mapping (ripple=15m, wave=60m, tide=240m; wave15/ripple5/tide60 = dayTrade lanes). Strategy dropdown (swing/daytrade/custom) writes policy.strategy + auto-fills channels; custom allows free edit. Data availability for dayTrade lanes requires merge_daytrade (global).
