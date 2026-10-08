@@ -949,3 +949,8 @@ done.
 - When Intervals edited, Profile dropdown updates immediately to match interval style (5m -> quick/scalp15; else slow/lifecycle).
 - Saves still explicit (user clicks Save). Prevents mismatch between intervals and profile.
 - Commit + snapshot v1.12.
+
+### 2026-10-07 SESSION 10l — Fix premature exits (respect entry channel)
+- exits._exit_zone now checks entry_channel from entry_snapshot first; falls back to agent channels if missing. 
+- Prevents lower-TF (e.g. ripple 15m) exiting a trade entered on tide (240m). 
+- Commit a061baf. Snapshot v1.13.
