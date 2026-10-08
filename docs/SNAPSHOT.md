@@ -918,3 +918,9 @@ done.
 - Commits: 3367267 amended → 3d094d5. Snapshots v1.7 (edge/proven work), v1.8b (this UI).
 
 > NOTE: After UI/backend code changes, restart GUI/trader (or relaunch process) for new code to take effect.
+
+### 2026-10-07 SESSION 10h — Fix: separate Strategy from Profiles
+- Removed strategy_swing/daytrade from trade/agents.PROFILES (profiles = risk posture only).
+- Strategy selector remains in UI as separate policy field (interval combo); stores policy.strategy + auto-fills channels for non-custom.
+- Clarified orthogonality: profile changes sizing/risk rules; strategy changes which channels/intervals are considered.
+- Commit: fc2559e. Snapshot v1.9.
