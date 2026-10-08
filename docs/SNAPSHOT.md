@@ -943,3 +943,9 @@ done.
 - Profile block sits under Strategy+Intervals (driven by selected intervals). Prevents obvious mismatches.
 - Backend PROFILES unchanged; only UI filtering.
 - Commit + snapshot v1.11.
+
+### 2026-10-07 SESSION 10k — Reactive profile selection by intervals
+- When Strategy changes, intervals auto-fill to preset; Profile dropdown refreshes to matching set and auto-selects sensible default.
+- When Intervals edited, Profile dropdown updates immediately to match interval style (5m -> quick/scalp15; else slow/lifecycle).
+- Saves still explicit (user clicks Save). Prevents mismatch between intervals and profile.
+- Commit + snapshot v1.12.
