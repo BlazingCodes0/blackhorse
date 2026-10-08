@@ -123,7 +123,7 @@ def ticker(pair: str):
 
 
 def _exit_zone(pos: dict, cfg: dict):
-    """Strategy says sell time: any of the agent's channels at strength >= its exit band."""
+    """Strategy says sell time: check exit zone respecting entry channel (avoid premature TF exits)."""
     try:
         import agents
         pol = agents.policy_for(pos.get("agent"))
@@ -133,8 +133,25 @@ def _exit_zone(pos: dict, cfg: dict):
         sig = signals.load(pos.get("pair"))
         if not sig:
             return False, "no signal snapshot for this pair yet"
+        sc = (pos.get("entry_snapshot") or {})
+        try:
+            if isinstance(sc, str):
+                import json as _json
+                sc = _json.loads(sc)
+        except Exception:
+            sc = {}
+        entry_ch = sc.get("entry_channel") or sc.get("channel")
+        # Prefer entry channel first
+        order = []
+        if entry_ch:
+            order.append(entry_ch)
         for n in chans:
-            s = (sig.get("channels", {}).get(n) or {}).get("strength")
+            if n not in order:
+                order.append(n)
+        # For swing-style (no 5m), avoid treating very short TF (ripple5/wave15 variants?) but also ripple can be noisy; prefer entry + higher/entry-aligned
+        for n in order:
+            c = (sig.get("channels", {}).get(n) or {})
+            s = c.get("strength")
             if s is not None and float(s) >= band:
                 return True, f"{n} strength {round(float(s), 3)} >= {band}"
         return False, "no strategy channel in exit zone"
