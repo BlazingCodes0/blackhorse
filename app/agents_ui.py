@@ -136,8 +136,8 @@ SETTINGS = [
     ]),
     ("Where it trades", [
         ("pairs", "Pairs", "list", "agent", "Comma list, e.g. DOT/USD,ETH/USD. Empty = every pair."),
-        ("strategy", "Strategy", "combo:swing,daytrade,custom", "policy", "Auto-set channels by strategy; custom = edit channels freely."),
-        ("channels", "Channels", "list", "policy", "ripple=15m, wave=60m, tide=240m, wave15, ripple5, tide60"),
+        ("strategy", "Strategy", "combo:swing,daytrade,custom", "policy", "swing=15m/60m/240m (ripple,wave,tide); daytrade=5m/15m/60m lanes (ripple5,wave15,tide60); custom = choose channels."),
+        ("channels", "Channels", "list", "policy", "slot mapping: ripple=15m, wave=60m, tide=240m; wave15=15m(dayT), ripple5=5m, tide60=60m(dayT)"),
         ("capital", "Capital $", "float", "agent", "Budget this agent may size from (bounded by real free cash)."),
     ]),
     ("Entry (buy)", [
