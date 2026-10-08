@@ -461,9 +461,16 @@ class AgentsMixin:
         return out
 
     # ---------------------------------------------------------------- profile
-    def _build_profile_group(self, a):
-        """Profile = the agent's personality/risk posture. Switchable any time."""
-        g = QGroupBox("Profile — personality / risk posture (change any time, applies next cycle)")
+    def _profiles_for_intervals(self, intervals):
+        iv = [str(x).strip() for x in (intervals or [])]
+        has5 = any(x == '5m' for x in iv)
+        if has5:
+            return ['quick','scalp15']
+        return ['slow','lifecycle']
+
+    def _build_profile_group(self, a, intervals=None):
+        """Profile = risk posture. Filtered by intervals to match strategy."""
+        g = QGroupBox("Profile — personality / risk posture (driven by interval set)")
         grid = QGridLayout(g)
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(6)
@@ -475,14 +482,27 @@ class AgentsMixin:
         lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._ag_profile_combo = QComboBox()
         self._ag_profile_combo.setMinimumWidth(280)
+        allowed = self._profiles_for_intervals(intervals)
         try:
-            for k, p in agents.profiles().items():
-                self._ag_profile_combo.addItem(f"{k} — {p['label']}", k)
+            profs = agents.profiles()
+            # add allowed first
+            for k in allowed:
+                if k in profs:
+                    p = profs[k]
+                    self._ag_profile_combo.addItem(f"{k} — {p['label']}", k)
+            if self._ag_profile_combo.count() == 0:
+                for k, p in profs.items():
+                    self._ag_profile_combo.addItem(f"{k} — {p['label']}", k)
+                    allowed.append(k)
         except Exception:
             pass
-        i = self._ag_profile_combo.findData(cur)
-        if i >= 0:
-            self._ag_profile_combo.setCurrentIndex(i)
+        # adjust cur to allowed
+        if cur not in allowed:
+            cur = allowed[0] if allowed else cur
+        # set current
+        for j in range(self._ag_profile_combo.count()):
+            if self._ag_profile_combo.itemData(j) == cur:
+                self._ag_profile_combo.setCurrentIndex(j); break
         grid.addWidget(lab, 0, 0)
         grid.addWidget(self._ag_profile_combo, 0, 1)
 
@@ -565,37 +585,31 @@ class AgentsMixin:
         strat_box = QGroupBox("Strategy — interval combination (editable, per agent)")
         sg = QGridLayout(strat_box)
         sg.setHorizontalSpacing(14); sg.setVerticalSpacing(8)
-        # build strategy/intervals fields first
         pol_cur = pol
-        # strategy
         ch = pol_cur.get('channels') or []
         iv = pol_cur.get('strategy_intervals') or _slots_to_intervals(ch)
         strat_cur = pol_cur.get('strategy')
         if strat_cur not in ('swing','daytrade','custom'):
-            # infer
-            if iv == ['15m','60m','240m'] or iv == ['5m','15m','60m']:
-                pass  # will set below
             if set(iv) == {'15m','60m','240m'} and len(iv)==3:
                 strat_cur = 'swing'
             elif '5m' in iv:
                 strat_cur = 'daytrade'
             else:
                 strat_cur = 'custom' if iv else 'swing'
-        # strategy row 0
         sl = QLabel('Strategy'); sl.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
         sw = QComboBox(); sw.addItems(['swing','daytrade','custom']); sw.setCurrentText(strat_cur or 'swing')
         sg.addWidget(sl,0,0); sg.addWidget(sw,0,1)
         self._agent_fields['strategy'] = (sw,'combo:swing,daytrade,custom','policy', strat_cur)
-        # intervals row 1
-        il = QLabel('Intervals'); il.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter); il.setToolTip('Raw intervals e.g. 15m,60m,240m')
+        il = QLabel('Intervals'); il.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
+        il.setToolTip('Raw intervals e.g. 15m,60m,240m or 5m,15m,60m')
         iw = QLineEdit(','.join(iv) if iv else '15m,60m,240m')
         iw.setToolTip('Raw intervals e.g. 15m,60m,240m or 5m,15m,60m')
         sg.addWidget(il,0,3); sg.addWidget(iw,0,4)
         self._agent_fields['intervals'] = (iw,'list','policy', iv)
         sg.setColumnMinimumWidth(2,24); sg.setColumnStretch(1,1); sg.setColumnStretch(4,1)
         pv.addWidget(strat_box)
-        # Profile block next
-        pv.addWidget(self._build_profile_group(a))
+        # Profile block under strategy (driven by intervals)
+        pv.addWidget(self._build_profile_group(a, iv))
         for title, fields in SETTINGS:
             # skip Where it trades block (already handled)
             if title == 'Where it trades':
