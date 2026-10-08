@@ -930,3 +930,10 @@ done.
 | Strategy | Interval combination (which channels to consider) per agent | Agents → Settings → Where it trades → Strategy (swing/daytrade/custom) | policy_overrides.strategy + policy_overrides.channels (slots) | swing = [ripple,wave,tide] (15m/60m/240m). daytrade = [wave15,ripple5,tide60] (adds 5m/15m/60m). custom = free edit of Channels. |
 | Channels | Slot names that map to concrete intervals | When Strategy=custom, edit Channels field directly | policy_overrides.channels | Mapping (slot→interval): ripple→15m, wave→60m, tide→240m, ripple5→5m, wave15→15m (dayTrade), tide60→60m. Hardcoded in signalbot/sidecar. |
 | Intervals (global) | Which raw intervals the sidecar actually computes for pairs | Config (signal_setup.json, per pair) + loop forces merge_daytrade | config/signal_setup.json, trade/loop.py | Global, not per-agent. To get 5m you need dayTrade slots + global merge/dayTrade intervals computed. |
+
+### 2026-10-07 SESSION 10i — Strategy+Intervals first, Profile after; editable intervals
+- Reworked agents UI: Strategy/Intervals block now rendered FIRST, Profile block AFTER (swapped layout). 
+- Added intervals<->slots translation (UI shows raw intervals like 15m,60m,240m; backend still uses channel slots). 
+- On save: derive strategy label from intervals (swing if 15m/60m/240m, daytrade if 5m present, else custom), write strategy_intervals, strategy, channels. 
+- Swing/daytrade are examples but intervals are fully editable per agent. Profiles remain risk posture only (separated from strategy). 
+- Commit 2bd0699. Snapshot v1.10.
