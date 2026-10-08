@@ -954,3 +954,6 @@ done.
 - exits._exit_zone now checks entry_channel from entry_snapshot first; falls back to agent channels if missing. 
 - Prevents lower-TF (e.g. ripple 15m) exiting a trade entered on tide (240m). 
 - Commit a061baf. Snapshot v1.13.
+
+### 2026-10-07 SESSION 10m — Restart note (GUI)
+- Restarted GUI after investigating early exit (exit now respects entry_channel). Closed trades present in DB.
