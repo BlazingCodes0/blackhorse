@@ -1,11 +1,17 @@
-"""fees.py — the exchange's BASE (entry-level, non-VIP) maker/taker fee.
+"""fees.py — the exchange's real maker/taker fee + pair precision.
 
-Source of truth: Kraken private TradeVolume -> `maxfee` per pair, which is the
-TIER-1 rate no matter what volume discount the account has earned. Fallback:
-config/exchange_fees.json. Cached 6h in logs/fee_cache.json. Every order sizes
-itself with these numbers so cost + fee never exceeds the cash available.
+Source of truth, in order:
+  1. logs/exchange_info.json — the slow periodic snapshot written by
+     trade/exchange_watch.py (batch AssetPairs + TradeVolume for ALL pairs). This
+     carries the ACCOUNT's real tier fee when available, else the tier-1 base.
+  2. live per-pair Kraken calls (TradeVolume / AssetPairs), cached in
+     logs/fee_cache.json / logs/pair_info.json.
+  3. config/exchange_fees.json (BASE tier-1 fallback).
+
+Every order sizes itself with these numbers so cost + fee never exceeds cash.
 
 CLI: python3 trade/fees.py [PAIR]
+     python3 trade/exchange_watch.py --once   # refresh the snapshot
 """
 import json, sys, time, math, urllib.request
 from pathlib import Path
@@ -13,8 +19,10 @@ from pathlib import Path
 BH = Path.home() / "blackhorse"
 sys.path.insert(0, str(BH / "trade"))
 CACHE = BH / "logs" / "fee_cache.json"
+INFO = BH / "logs" / "exchange_info.json"
 FALLBACK = BH / "config" / "exchange_fees.json"
 TTL = 6 * 3600
+INFO_TTL = 6 * 3600
 
 
 def _kpair(pair: str) -> str:
@@ -29,6 +37,21 @@ def _load(p, d):
         return d
 
 
+def _find_info(pair: str) -> dict:
+    """One pair's record from the consolidated exchange_watch snapshot (or {})."""
+    d = _load(INFO, {})
+    pairs = d.get("pairs") or {}
+    if not pairs:
+        return {}
+    want = _kpair(pair).replace("XBT", "BTC")
+    for key, rec in pairs.items():
+        if _kpair(key).replace("XBT", "BTC") == want:
+            return rec
+        if _kpair(rec.get("wsname", "")).replace("XBT", "BTC") == want:
+            return rec
+    return {}
+
+
 def _fallback() -> dict:
     f = _load(FALLBACK, {}).get("kraken", {})
     return {"maker_pct": float(f.get("maker_pct", 0.40)), "taker_pct": float(f.get("taker_pct", 0.80)),
@@ -36,7 +59,21 @@ def _fallback() -> dict:
 
 
 def base_fees(pair: str = "DOT/USD") -> dict:
-    """{"maker_pct","taker_pct","source"} — base tier, percent."""
+    """{"maker_pct","taker_pct","source"} — the account's real fee, percent.
+    Falls back to the snapshot's base fee, then to live per-pair, then config."""
+    d = _load(INFO, {})
+    v = _find_info(pair)
+    if v and time.time() - d.get("updated", 0) < INFO_TTL:
+        maker = v.get("account_maker_pct", v.get("maker_pct"))
+        taker = v.get("account_taker_pct", v.get("taker_pct"))
+        if maker is not None and taker is not None:
+            return {"maker_pct": float(maker), "taker_pct": float(taker),
+                    "account_taker_pct": v.get("account_taker_pct"),
+                    "account_maker_pct": v.get("account_maker_pct"),
+                    "base_maker_pct": v.get("base_maker_pct"),
+                    "base_taker_pct": v.get("base_taker_pct"),
+                    "source": f"exchange_info.json ({v.get('source', 'snapshot')})",
+                    "ts": d.get("updated", 0)}
     kp = _kpair(pair)
     cache = _load(CACHE, {})
     c = cache.get(kp)
@@ -67,7 +104,18 @@ def rates(pair: str = "DOT/USD"):
 
 
 def pair_info(pair: str) -> dict:
-    """pair_decimals / lot_decimals / ordermin / costmin from Kraken (cached 24h)."""
+    """pair_decimals / lot_decimals / ordermin / costmin (+ tick_size) for a pair.
+    Prefers the consolidated snapshot; falls back to a live per-pair call."""
+    d = _load(INFO, {})
+    v = _find_info(pair)
+    if v and time.time() - d.get("updated", 0) < 86400:
+        return {"pair_decimals": int(v.get("pair_decimals") if v.get("pair_decimals") is not None else 4),
+                "lot_decimals": int(v.get("lot_decimals") if v.get("lot_decimals") is not None else 8),
+                "ordermin": float(v.get("ordermin") or 0),
+                "costmin": float(v.get("costmin") or 0),
+                "tick_size": v.get("tick_size"),
+                "pair": v.get("wsname"),
+                "ts": d.get("updated", 0)}
     kp = _kpair(pair)
     p = BH / "logs" / "pair_info.json"
     cache = _load(p, {})

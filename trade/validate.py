@@ -26,7 +26,7 @@ from pathlib import Path
 BH = Path.home() / "blackhorse"
 REPORT = BH / "logs" / "backtest_report.json"
 PASS_FLAG = BH / "logs" / "backtest_passed.flag"
-FEE_PCT = 0.26          # per side
+FEE_PCT = 0.80          # per side (real Kraken base taker; was stale 0.26)
 SLIP_PCT = 0.1          # per side
 LOOKBACK = 20           # range window (candles)
 

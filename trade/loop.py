@@ -171,12 +171,30 @@ def sweep(refresh_signal=True, ask_brain=True, pair=None, cfg=None, pairs=None) 
     except Exception as e:
         return {"ts": rec["ts"], "halted": f"heartbeat failed: {e}"}
 
+    # exchange info: slow periodic refresh of REAL fees + precision for ALL pairs.
+    # Stale-only, so it fires at most once per 6h while the loop keeps beating.
+    try:
+        import exchange_watch
+        if exchange_watch.age() > exchange_watch.interval_seconds():
+            rec["exchange_watch"] = exchange_watch.sweep()
+    except Exception as e:
+        rec["exchange_watch"] = f"error: {e}"
+
     # settle resting limit entries (fill -> position at the real fill; expired -> drop)
     try:
         import execute as _ex2
         ev = _ex2.sync_pending()
         if ev:
             rec["pending_sync"] = ev
+    except Exception:
+        pass
+
+    # settle resting maker exits (fill -> close; open -> chase the maker price)
+    try:
+        import execute as _ex3
+        xev = _ex3.sync_exits()
+        if xev:
+            rec["exit_sync"] = xev
     except Exception:
         pass
 

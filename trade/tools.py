@@ -200,9 +200,9 @@ def _norm_pair(raw):
 @tool("place_order", "Place the OWNER'S manual order (paper or live, gated). "
                      "Requires an explicit mode.",
       {"side": "buy|sell", "pair": "e.g. DOT/USD", "amount_usd": "number",
-       "mode": "paper|live", "order_type": "market|limit (optional, default market)",
+       "mode": "paper|live", "order_type": "limit|market (optional, default limit)",
        "price": "number, for limit orders"})
-def place_order(side, pair, amount_usd, mode, order_type="market", price=None):
+def place_order(side, pair, amount_usd, mode, order_type="limit", price=None):
     import execute
     side = str(side).lower()
     mode = str(mode).lower()

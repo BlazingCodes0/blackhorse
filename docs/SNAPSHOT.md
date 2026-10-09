@@ -957,3 +957,63 @@ done.
 
 ### 2026-10-07 SESSION 10m — Restart note (GUI)
 - Restarted GUI after investigating early exit (exit now respects entry_channel). Closed trades present in DB.
+
+### 2026-10-09 SESSION 10n — Real exchange fees: audit + slow exchange watch
+- User report: "fees > profit — is BlackHorse using real exchange fees or made-up ones?"
+- Audit: LIVE fees are real. trade/fees.py reads Kraken private TradeVolume `maxfee`
+  (Tier-1 base) and caches it; logs/fee_cache.json shows account maker/taker 0.40%/0.80%,
+  matching Kraken's published Tier-1 schedule (post July-2026 change). Not fabricated.
+- Root cause: the edge/profit PROOF used a stale fee — config/edge_criteria.json
+  fee_pct_per_side=0.26 and trade/edge_scan.py / import_edge.py FEE_PCT=0.26 (Kraken's
+  pre-2026 base taker). Proof assumed 0.62% round trip (0.26*2 + 0.10 slip); live pays
+  ~1.40% (0.40 maker + 0.80 taker + 0.20 slip). That ~0.8%/trade gap is why fees looked
+  like they ate all profit; e.g. "PROVEN" 60m SELL (+0.324% @0.26) flips negative live.
+- Added: NEW trade/exchange_watch.py — slow periodic BATCH fetch for all pairs
+  (public AssetPairs metadata + private TradeVolume account fees) into ONE consolidated
+  logs/exchange_info.json (fees, account-tier fees, pair_decimals, lot_decimals, ordermin,
+  costmin, tick_size, status, base/quote). Runs `--once` or `--loop 21600` (6h, slow).
+- fees.py now prefers the consolidated cache (account fee > base fee) with the old live
+  per-pair path as fallback. Universe = ALL Kraken spot pairs (1460 in the first sweep).
+- Slow cadence: config/trading.json `exchange_watch_seconds` (default 21600 = 6h). The
+  trade loop (trade/loop.py sweep) refreshes it only when stale; standalone daemon via
+  `python3 trade/exchange_watch.py --loop`. Public AssetPairs no longer carries fee
+  schedules (empty arrays), so per-pair fee is account TradeVolume `fee` when creds are
+  present, else the tier-1 fallback (0.40/0.80).
+- Swept the last stale 0.26 fee defaults onto the real fee: execute.py paper-entry fee
+  (now maker for limit / taker for market via fees.rates), portfolio.py open/close fee
+  defaults, decider.py default + config/decider.json, edge.py DEFAULT_CRIT, edge_rules.py
+  (reads edge_criteria), validate.py FEE_PCT. All now 0.80 per side (or live rates).
+- Also aligned edge fee source to the real exchange fee (criteria 0.80) — code/config only;
+  re-tagging the existing report via `trade/edge.py refresh` is a separate, explicit step.
+- Verified: py_compile clean; exchange_watch --once writes logs/exchange_info.json.
+
+### 2026-10-09 SESSION 10o — Limit-by-default everywhere (maker fees); maker-only exits
+- Owner rule: stress LIMIT as the default "all around" unless the user says otherwise, to
+  avoid taker fees (0.80% vs maker 0.40%).
+- Entries (both BUY and SELL) now default to LIMIT:
+  - decider.py `_entry_type` default "limit"; config/decider.json entry_order_type "limit".
+  - execute._live_order defaults otype "limit" and no longer forces sell -> market.
+  - tools.place_order default "limit".
+  - skin/brain.py order intent defaults "limit" and, if no price is given, asks for one
+    instead of silently crossing (no more amount-as-price misparse).
+  - app/agents_ui.py display fallback default "limit" (combo already defaults to limit).
+  - config/agents.json agent_6 override "market" -> "limit".
+- Exits are now LIMIT-ONLY (no taker, ever). execute.sell_position rests a maker sell at
+  max(suggested, best ask) rounded UP to the pair tick, so it can never cross. exits.manage
+  passes price = max(min_profit_price, ask). New execute.sync_exits() (wired into loop.py):
+  closed -> close the position at the REAL fill; partial -> book the executed part; still
+  open past config/decider.json exit_requote_seconds (20s) -> cancel and re-rest at the
+  current best ask, chasing the maker price (the "bid/ask war"); canceled/expired unfilled
+  -> release the position so exits.py retries. State in logs/pending_exits.json.
+- config/decider.json: exit_order_type "limit", exit_requote_seconds 20.
+- Verified: py_compile clean; _ceil_dex/_kpair/_ticker good; sync_exits() == [] on empty;
+  public Ticker DOT/USD bid/ask read; decider cfg entry_order_type = limit.
+
+### 2026-10-09 SESSION 10p — Dashboard: pretty total P&L + per-agent attribution
+- trade/portfolio.py: new pnl_by_agent() — realized per agent from the store's CLOSED
+  positions (portfolio.json drops them on close), unrealized marked from open positions;
+  returns per-agent rows + realized/unrealized/grand total.
+- app/main.py Dashboard: big monospace "TOTAL P&L  +$x.xxxx" (green/red) with a
+  description line + tooltip listing each agent's contribution (real · unreal · closed/open).
+- Verified: pnl_by_agent() returns agent_1 +0.0771, agent_6 +0.0292, house -0.0492
+  (total +0.0571); GUI restarted clean.

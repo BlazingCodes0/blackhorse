@@ -200,8 +200,9 @@ def manage(live: bool = True) -> list:
               "candidates": cands, "action": "SELL" if reason else "WATCH", "why": reason}
         state[pos["id"]] = st
         if reason and live:
-            res = execute.sell_position(pos["id"], reason)
-            st["result"] = {k: res.get(k) for k in ("ok", "reason", "txid", "price", "net")}
+            res = execute.sell_position(pos["id"], reason, price=max(need, ask))
+            st["result"] = {k: res.get(k) for k in ("ok", "reason", "txid", "price", "net",
+                                                    "pending", "maker", "volume")}
             try:
                 import store
                 store.record_decision("exits", "SELL", pair=pair, agent=pos.get("agent"), entry=pos["entry"],

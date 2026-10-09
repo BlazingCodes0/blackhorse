@@ -7,7 +7,7 @@
   "min_reward_risk": 1.5,
   "stop_max_pct": 3.0,
   "stop_buffer_pct": 0.6,
-  "fee_pct_per_side": 0.26,
+  "fee_pct_per_side": 0.80,
   "require_tide_context": true,
   "require_proven_edge": false,
   "spread_flat_epsilon": 0.02,
@@ -26,5 +26,7 @@
     "average"
   ],
   "exit_min_net_pct": 0.25,
-  "exit_poll_seconds": 15
+  "exit_poll_seconds": 15,
+  "exit_order_type": "limit",
+  "exit_requote_seconds": 20
 }

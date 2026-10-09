@@ -15,6 +15,17 @@ from pathlib import Path
 BH = Path.home() / "blackhorse"
 STATE = BH / "logs" / "portfolio.json"
 LEDGER = BH / "logs" / "trades.jsonl"
+DEFAULT_FEE_PCT = 0.80          # conservative taker fallback; real value from fees.rates()
+
+
+def _fee_pct(pair: str = "DOT/USD", side: str = "taker") -> float:
+    """Real per-side fee (percent) from fees.py (snapshot/account tier); 0.80 fallback."""
+    try:
+        import fees
+        mk, tk = fees.rates(pair or "DOT/USD")
+        return (mk if str(side).lower() == "maker" else tk) * 100.0
+    except Exception:
+        return DEFAULT_FEE_PCT
 
 
 def _load() -> dict:
@@ -42,6 +53,46 @@ def open_positions() -> list:
     return _load().get("positions", [])
 
 
+def pnl_by_agent() -> dict:
+    """Total P&L broken down by the agent that owns each position.
+
+    Realized comes from the store's CLOSED positions (portfolio.json drops them on
+    close); unrealized is marked from the open positions. Returns per-agent rows plus
+    the grand totals so a dashboard can pretty-print the total and attribute it."""
+    d = _load()
+    out: dict = {}
+
+    def row(a):
+        return out.setdefault(a or "house",
+                              {"realized": 0.0, "unrealized": 0.0, "open": 0, "closed": 0})
+
+    for p in d.get("positions", []):
+        r = row(p.get("agent"))
+        mark = p.get("mark") if p.get("mark") is not None else p.get("entry")
+        mult = 1 if str(p.get("side")).upper() == "BUY" else -1
+        r["unrealized"] += (float(mark) - float(p["entry"])) * float(p["qty"]) * mult
+        r["open"] += 1
+    try:
+        import store
+        store.init()
+        con = store.connect()
+        for r in con.execute("SELECT agent, COALESCE(SUM(net),0) net, COUNT(*) n FROM positions "
+                             "WHERE status='CLOSED' GROUP BY agent").fetchall():
+            a = row(r["agent"])
+            a["realized"] += float(r["net"] or 0)
+            a["closed"] += int(r["n"] or 0)
+    except Exception:
+        pass
+    for a in out.values():
+        a["realized"] = round(a["realized"], 8)
+        a["unrealized"] = round(a["unrealized"], 8)
+        a["total"] = round(a["realized"] + a["unrealized"], 8)
+    return {"agents": out,
+            "realized": round(sum(a["realized"] for a in out.values()), 8),
+            "unrealized": round(sum(a["unrealized"] for a in out.values()), 8),
+            "total": round(sum(a["total"] for a in out.values()), 8)}
+
+
 def status() -> dict:
     d = _load()
     unreal = 0.0
@@ -55,12 +106,13 @@ def status() -> dict:
 
 
 def open_position(agent: str, pair: str, side: str, entry: float, qty: float,
-                  stop: float = None, target: float = None, fee_pct: float = 0.26,
+                  stop: float = None, target: float = None, fee_pct: float = None,
                   venue: str = None, note: str = None, mode: str = "PAPER", interval=None, edge_cell=None,
                   fee: float = None, entry_snapshot: dict = None) -> dict:
     d = _load()
     if fee is None:
-        fee = entry * qty * (fee_pct / 100)
+        pct = fee_pct if fee_pct is not None else _fee_pct(pair)
+        fee = entry * qty * (pct / 100)
     pos = {"id": f"pos_{int(time.time()*1000)}", "agent": agent, "pair": pair, "side": side,
            "entry": entry, "qty": qty, "stop": stop, "target": target, "mode": mode,
            "fee_entry": fee, "opened": time.time(), "venue": venue, "note": note, "mark": entry,
@@ -111,7 +163,7 @@ def mark(pair: str, price: float) -> list:
     return [{"id": pos_id, "reason": r, "price": price} for r, pos_id in hit]
 
 
-def close_position(pos_id: str, price: float, reason: str = "manual", fee_pct: float = 0.26,
+def close_position(pos_id: str, price: float, reason: str = "manual", fee_pct: float = None,
                    fee: float = None) -> dict:
     d = _load()
     pos = next((p for p in d["positions"] if p["id"] == pos_id), None)
@@ -120,7 +172,8 @@ def close_position(pos_id: str, price: float, reason: str = "manual", fee_pct: f
         return {"ok": False, "error": "position not found"}
     mult = 1 if pos["side"] == "BUY" else -1
     gross = (price - pos["entry"]) * pos["qty"] * mult
-    fee_exit = fee if fee is not None else price * pos["qty"] * (fee_pct / 100)
+    pct = fee_pct if fee_pct is not None else _fee_pct(pos.get("pair", "DOT/USD"))
+    fee_exit = fee if fee is not None else price * pos["qty"] * (pct / 100)
     net = gross - pos["fee_entry"] - fee_exit
     d["positions"] = [p for p in d["positions"] if p["id"] != pos_id]
     d["realized_pnl"] += net
