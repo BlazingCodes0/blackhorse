@@ -12,7 +12,18 @@ from pathlib import Path
 
 BH = Path.home() / "blackhorse"
 ROWS = BH / "logs" / "sb_rows.json"
-FEE = 0.26 * 2 + 0.1  # round-trip fees + slippage pct
+CRIT = BH / "config" / "edge_criteria.json"
+SLIP = 0.1
+
+
+def _fee_round_trip() -> float:
+    """Real round-trip cost: 2 sides of the exchange fee + slippage. Single source:
+    config/edge_criteria.json (kept in step with the exchange_watch snapshot)."""
+    try:
+        per_side = float(json.loads(CRIT.read_text()).get("fee_pct_per_side", 0.80))
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        per_side = 0.80
+    return per_side * 2 + SLIP
 
 RULES = {
     "raw BUY signal": lambda r: r.get("rangeSignal") == "BUY",
@@ -30,6 +41,7 @@ RULES = {
 }
 
 def score(rows, horizon):
+    fee = _fee_round_trip()
     out = {}
     half = len(rows) // 2
     for name, f in RULES.items():
@@ -42,7 +54,7 @@ def score(rows, horizon):
                 sign = -1
             elif name.startswith("BUY") or name == "raw BUY signal":
                 sign = 1
-            nets = [r[f"return{horizon}"] * sign - FEE for r in sel]
+            nets = [r[f"return{horizon}"] * sign - fee for r in sel]
             wins = sum(1 for x in nets if x > 0)
             out.setdefault(name, {})[tag] = {
                 "n": len(nets), "win_pct": round(100 * wins / len(nets), 1),
@@ -60,6 +72,6 @@ if __name__ == "__main__":
     data = json.loads(ROWS.read_text())
     for iv, rows in data.items():
         res = score(rows, horizon)
-        print(f"\n=== interval {iv} (horizon return{horizon}, fee {FEE:.2f}% round trip) ===")
+        print(f"\n=== interval {iv} (horizon return{horizon}, fee {_fee_round_trip():.2f}% round trip) ===")
         for name, r in res.items():
             print(f"  {name:38s} {r.get('train')} {r.get('test')} -> {r.get('VERDICT')}")

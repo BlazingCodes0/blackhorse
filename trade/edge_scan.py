@@ -19,8 +19,18 @@ BH = Path.home() / "blackhorse"
 QF = Path.home() / "qubitFlowBeta" / "qubitFlowBeta"
 ROWS = BH / "logs" / "sb_rows.json"
 REPORT = BH / "logs" / "edge_report.json"
-FEE_PCT = 0.26
+CRIT = BH / "config" / "edge_criteria.json"
+FEE_PCT = 0.80          # real Kraken base taker; overridden by edge_criteria.json
 SLIP_PCT = 0.1
+
+
+def _fee_pct() -> float:
+    """Same fee the decider/exchange will actually charge. Single source:
+    config/edge_criteria.json (kept in step with the exchange_watch snapshot)."""
+    try:
+        return float(json.loads(CRIT.read_text()).get("fee_pct_per_side", FEE_PCT))
+    except (json.JSONDecodeError, OSError):
+        return FEE_PCT
 
 
 def dump_rows() -> dict:
@@ -38,7 +48,7 @@ def dump_rows() -> dict:
 
 
 def scan(rows: dict, horizon=5) -> dict:
-    fee = FEE_PCT * 2 + SLIP_PCT
+    fee = _fee_pct() * 2 + SLIP_PCT
     out = {}
     for iv, rs in rows.items():
         cell = {}

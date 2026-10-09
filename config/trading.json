@@ -8,5 +8,6 @@
     "SOL/USD",
     "XRP/USD"
   ],
-  "interval_seconds": 300
+  "interval_seconds": 300,
+  "exchange_watch_seconds": 21600
 }

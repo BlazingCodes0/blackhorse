@@ -215,8 +215,11 @@ def _route_intent(msg: str):
                 side = parsed.get("side") or "buy"
                 pair = parsed.get("pair") or "DOT/USD"
                 amt = parsed.get("amount_usd") or parsed.get("amount")
-                typ = (parsed.get("order_type") or "market").lower()
+                typ = (parsed.get("order_type") or "limit").lower()
                 price = parsed.get("limit_price") or parsed.get("price")
+                if typ == "limit" and not price:
+                    return ("Limit is the house default (maker fee, cheaper). Give me the limit "
+                            "price, or say 'market' to cross now.")
                 arg_str = f"create order {side} {pair} {typ} {price or amt} {amt or ''}".strip()
                 return execute.manual_order(arg_str)
             if intent == "cancel" and parsed.get("txid"):
@@ -338,7 +341,10 @@ def _route_intent(msg: str):
                 if parsed.get("intent") == "order":
                     side = parsed.get("side"); pair = parsed.get("pair") or "DOT/USD"
                     amt = parsed.get("amount_usd"); price = parsed.get("limit_price")
-                    typ = parsed.get("order_type") or "market"
+                    typ = parsed.get("order_type") or "limit"
+                    if str(typ).lower() == "limit" and not price:
+                        return ("Limit is the house default (maker fee, cheaper). Give me the limit "
+                                "price, or say 'market' to cross now.")
                     manual = execute.manual_order(f"create order {side} {pair} {typ} {price or amt} {amt or ''}".strip())
                     return manual or ("I couldn't place it — missing fields.")
                 if parsed.get("intent") == "cancel" and parsed.get("txid"):

@@ -35,7 +35,7 @@ def _cfg() -> dict:
     defaults = {"risk_per_trade_pct": 1.0, "max_position_pct": 10.0,
                 "entry_strength_max": 0.25, "exit_strength_min": 0.75,
                 "min_reward_risk": 1.5, "stop_max_pct": 3.0,
-                "fee_pct_per_side": 0.26, "require_tide_context": True}
+                "fee_pct_per_side": 0.80, "require_tide_context": True}
     try:
         return {**defaults, **json.loads(CFG.read_text())}
     except (json.JSONDecodeError, OSError):
@@ -230,7 +230,7 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
         "action": best["side"], "channel": best["channel"], "regime": (verdict or {}).get("regime"),
         "entry": round(best["entry"], 8), "stop": round(best["stop"], 8),
         "target": round(best["target"], 8), "size_quote": best["size_quote"],
-        "order_type": best.get("order_type", "market"), "expiry_s": best.get("expiry_s"),
+        "order_type": best.get("order_type", "limit"), "expiry_s": best.get("expiry_s"),
         "outlay_quote": best.get("outlay_quote"), "fee_reserve_pct": best.get("fee_reserve_pct"),
         "fee_entry_pct": best.get("fee_entry_pct"), "fee_exit_pct": best.get("fee_exit_pct"),
         "risk_quote": round(best["risk_quote"], 2), "rr": round(best["rr"], 2),
@@ -360,12 +360,13 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
     try:
         import fees as _fees
         _mk, _tk = _fees.rates(pair or "DOT/USD")
-        _entry_type = (cfg.get("entry_order_type", "limit") if side == "BUY" else "market")
+        # default LIMIT (maker) for BOTH sides — cheapest; user can override per agent
+        _entry_type = str(cfg.get("entry_order_type", "limit")).lower()
         fee_entry_frac = _mk if _entry_type == "limit" else _tk
         fee_exit_frac = _tk
         fee_reserve = _tk
     except Exception:
-        _entry_type = "market"
+        _entry_type = "limit"
         fee_entry_frac = fee_exit_frac = fee_reserve = cfg["fee_pct_per_side"] / 100
     fee_frac = fee_entry_frac + fee_exit_frac
     slip_frac = cfg.get("slippage_pct_per_side", 0.1) / 100 * 2

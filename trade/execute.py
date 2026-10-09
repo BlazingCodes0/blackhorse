@@ -18,7 +18,18 @@ BH = Path.home() / "blackhorse"
 sys.path.insert(0, str(BH / "trade"))
 sys.path.insert(0, str(BH / "memory"))
 SLIPPAGE_PCT_PER_SIDE = 0.1
-FEE_PCT_PER_SIDE = 0.26
+FEE_PCT_PER_SIDE = 0.80          # conservative taker fallback; real value from fees.rates()
+
+
+def _entry_fee_pct(pair: str = "DOT/USD", order_type: str = "market") -> float:
+    """Real per-side fee (percent) for a paper entry: maker for a resting limit,
+    taker otherwise. Sourced from fees.py (snapshot/account tier); 0.80 fallback."""
+    try:
+        import fees
+        mk, tk = fees.rates(pair or "DOT/USD")
+        return (mk if str(order_type).lower() == "limit" else tk) * 100.0
+    except Exception:
+        return FEE_PCT_PER_SIDE
 
 
 def _norm_pair(raw: str) -> str:
@@ -156,7 +167,8 @@ def execute(plan: dict, pair: str = None, mode: str = None) -> dict:
     edge_cell = f"{interval or '?'}{plan['action']}"
     pos = portfolio.open_position(agent=agent, pair=pair or "DOT/USD", side=plan["action"],
                                   entry=fill, qty=qty, stop=plan.get("stop"),
-                                  target=plan.get("target"), fee_pct=FEE_PCT_PER_SIDE,
+                                  target=plan.get("target"),
+                                  fee_pct=_entry_fee_pct(pair, plan.get("order_type", "market")),
                                   venue=heart_venue(), note=f"{mode} fill", mode=mode,
                                   interval=interval, edge_cell=edge_cell)
     # record the DB trail (idempotent order, fill, position) — non-fatal if absent
@@ -280,6 +292,21 @@ def kraken_last_price(pair: str) -> float | None:
         return None
 
 
+def _kpair(pair: str) -> str:
+    k = _norm_pair(pair).replace("/", "")
+    return k.replace("BTC", "XBT", 1) if k.startswith("BTC") else k
+
+
+def _ticker(pair: str):
+    """Public (bid, ask) for a pair."""
+    import urllib.request
+    d = json.loads(urllib.request.urlopen(urllib.request.Request(
+        f"https://api.kraken.com/0/public/Ticker?pair={_kpair(pair)}",
+        headers={"User-Agent": "BlackHorse/1.0"}), timeout=15).read())
+    row = next(iter(d["result"].values()))
+    return float(row["b"][0]), float(row["a"][0])
+
+
 def kraken_fill(txid: str, tries: int = 6) -> dict | None:
     """Actual fill of a Kraken order: {price, vol, cost, fee}. The exchange is the
     truth, not the plan. Returns None if it can't be read."""
@@ -320,6 +347,27 @@ def pending_outlay() -> float:
 
 def has_pending(agent: str, pair: str) -> bool:
     return any(p.get("agent") == agent and p.get("pair") == pair for p in _pend_load())
+
+
+EXITS = BH / "logs" / "pending_exits.json"
+
+
+def _exit_load() -> list:
+    try:
+        return json.loads(EXITS.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _exit_save(lst: list):
+    EXITS.parent.mkdir(parents=True, exist_ok=True)
+    EXITS.write_text(json.dumps(lst, indent=2))
+
+
+def _ceil_dex(x: float, decimals: int) -> float:
+    q = 10 ** int(decimals)
+    import math
+    return math.ceil(float(x) * q - 1e-9) / q
 
 
 def sync_pending() -> list:
@@ -392,9 +440,10 @@ def _live_order(plan: dict, pair: str) -> dict:
     if kpair.startswith("BTC"):
         kpair = kpair.replace("BTC", "XBT", 1)
     side = "buy" if plan["action"] == "BUY" else "sell"
-    otype = str(plan.get("order_type") or "market").lower()
-    if side == "sell":
-        otype = "market"
+    # default LIMIT (maker) for both buy and sell; explicit market only if the user asks
+    otype = str(plan.get("order_type") or "limit").lower()
+    if otype not in ("limit", "market"):
+        otype = "limit"
     price = plan.get("price") or plan.get("entry")
     base = pair.split("/")[0].upper()
     info = fees.pair_info(pair)
@@ -410,6 +459,12 @@ def _live_order(plan: dict, pair: str) -> dict:
         if held <= 0:
             return {"ok": False, "blocked": True, "reason": f"spot-only: no {base} inventory to sell"}
         volume = fees.floor_to(held * 0.999, info["lot_decimals"])   # keep a hair for fees
+        if otype == "limit":
+            if not price or float(price) <= 0:
+                return {"ok": False, "blocked": True,
+                        "reason": "limit sell needs a price (or set order_type=market)"}
+            price = round(float(price), info["pair_decimals"])
+            expire = int(plan.get("expiry_s") or 600)
     else:
         if plan.get("agent") and has_pending(plan["agent"], pair):
             return {"ok": False, "blocked": True, "reason": "an entry order is already working for this agent/pair"}
@@ -512,8 +567,9 @@ def _live_order(plan: dict, pair: str) -> dict:
     return {"ok": True, "mode": "LIVE", "txid": txid, "volume": volume, "kraken": r.get("result")}
 
 
-def sell_position(pos_id: str, reason: str) -> dict:
-    """Market-sell exactly ONE position's quantity, record the REAL fill, close it."""
+def sell_position(pos_id: str, reason: str, price: float = None) -> dict:
+    """LIMIT-ONLY exit: rest a maker sell at/above the best ask and earn the maker fee.
+    It never crosses (no taker fee). sync_exits() settles the fill and chases the price."""
     import time, portfolio, fees, heart
     pos = next((p for p in portfolio.open_positions() if p["id"] == pos_id), None)
     if not pos or pos.get("exit_txid"):
@@ -525,14 +581,19 @@ def sell_position(pos_id: str, reason: str) -> dict:
     volume = fees.floor_to(min(float(pos["qty"]), held), info["lot_decimals"])
     if volume <= 0 or volume < info.get("ordermin", 0):
         return {"ok": False, "reason": f"nothing sellable on exchange ({volume} {base}, held {held})"}
+    try:
+        bid, ask = _ticker(pair)
+    except Exception as e:
+        return {"ok": False, "reason": f"no live bid/ask: {e}"}
+    # maker price: never below the best ask (crossing = taker). Round UP to the pair tick.
+    price = _ceil_dex(max(float(price or 0), ask), info["pair_decimals"])
     hv = heart.check(action="SELL", quote=volume * float(pos["entry"]), venue=heart_venue(),
                      positions=len(portfolio.open_positions()), holding_qty=held, manual=False)
     if hv["decision"] != "ALLOW":
         return {"ok": False, "reason": f"heart {hv['decision']}: {hv['reason']}"}
-    kpair = pair.replace("/", "")
-    kpair = kpair.replace("BTC", "XBT", 1) if kpair.startswith("BTC") else kpair
+    kpair = _kpair(pair)
     body = {"nonce": str(int(time.time() * 1000)), "pair": kpair, "type": "sell",
-            "ordertype": "market", "volume": str(volume)}
+            "ordertype": "limit", "volume": str(volume), "price": str(price)}
     if os.environ.get("BH_VALIDATE_ONLY"):
         body["validate"] = "true"
     r = _kraken_private("/0/private/AddOrder", body)
@@ -544,7 +605,7 @@ def sell_position(pos_id: str, reason: str) -> dict:
     txid = (r.get("result") or {}).get("txid", [None])[0]
     try:
         import store
-        store.live_order(txid, pos.get("agent"), pair, "sell", "market", None, volume,
+        store.live_order(txid, pos.get("agent"), pair, "sell", "limit", price, volume,
                          plan={"reason": reason}, status="OPEN")
     except Exception:
         pass
@@ -552,22 +613,131 @@ def sell_position(pos_id: str, reason: str) -> dict:
     for p in d["positions"]:
         if p["id"] == pos_id:
             p["exit_txid"] = txid
+            p["exit_price"] = price
+            p["exit_reason"] = reason
     portfolio._save(d)
-    real = kraken_fill(txid) if txid else None
-    price = real["price"] if real else (kraken_last_price(pair) or float(pos["entry"]))
+    ex = _exit_load()
+    ex = [x for x in ex if x.get("pos_id") != pos_id]
+    ex.append({"txid": txid, "pos_id": pos_id, "agent": pos.get("agent"), "pair": pair,
+               "price": price, "qty": volume, "volume": volume, "placed": time.time(),
+               "reason": reason, "done": 0})
+    _exit_save(ex)
+    return {"ok": True, "txid": txid, "price": price, "volume": volume, "pending": True,
+            "maker": True, "bid": bid, "ask": ask}
+
+
+def sync_exits() -> list:
+    """Settle resting maker-exit sells. closed -> close the position at the REAL fill;
+    partial -> book the executed part; still open past exit_requote_seconds -> cancel and
+    re-rest at the current best ask (chase the maker price WITHOUT ever crossing to taker);
+    canceled/expired unfilled -> release the position so exits.py retries. Exchange = truth."""
+    import time, portfolio, fees
+    ex = _exit_load()
+    if not ex:
+        return []
     try:
-        import store
-        if real:
-            store.live_order_result(txid, "FILLED", real["vol"], real["price"], real["fee"])
-    except Exception:
-        pass
-    res = portfolio.close_position(pos_id, price, reason=reason, fee=real["fee"] if real else None)
+        cfg = json.loads((BH / "config" / "decider.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        cfg = {}
+    min_net = float(cfg.get("exit_min_net_pct", 0.25))
+    requote = float(cfg.get("exit_requote_seconds", 20))
     try:
-        heart.heartbeat()
+        r = _kraken_private("/0/private/QueryOrders",
+                            {"nonce": str(int(time.time() * 1000)),
+                             "txid": ",".join(e["txid"] for e in ex)})
     except Exception:
-        pass
-    return {"ok": True, "txid": txid, "price": price, "net": res.get("net"),
-            "fill_verified": bool(real)}
+        return []
+    if r.get("error"):
+        return []
+    res = r.get("result") or {}
+    open_pos = {p["id"]: p for p in portfolio.open_positions()}
+    drop, events = set(), []
+    for e in ex:
+        pos = open_pos.get(e["pos_id"])
+        if not pos:
+            drop.add(e["txid"]); continue
+        o = res.get(e["txid"])
+        if not o:
+            continue
+        st = o.get("status")
+        vol = float(o.get("vol_exec") or 0)
+        px = float(o.get("price") or 0)
+        fee = float(o.get("fee") or 0)
+        try:
+            import store
+            if st in ("closed", "canceled", "expired"):
+                store.live_order_result(e["txid"], "FILLED" if st == "closed" else
+                                        ("PARTIAL" if vol > 0 else st.upper()), vol, px or None, fee)
+        except Exception:
+            pass
+        if st == "closed":                            # fully filled -> close at the real fill
+            portfolio.close_position(e["pos_id"], px or float(pos["entry"]),
+                                     reason=e.get("reason") or "limit exit", fee=fee or None)
+            try:
+                import heart
+                heart.heartbeat()
+            except Exception:
+                pass
+            events.append({"txid": e["txid"], "pos": e["pos_id"], "result": "filled",
+                           "price": px, "vol": vol, "fee": fee})
+            drop.add(e["txid"]); continue
+        if vol > 0:                                   # book the executed part, keep working
+            delta = vol - float(e.get("done") or 0)
+            if delta > 0:
+                d = portfolio._load()
+                for p in d["positions"]:
+                    if p["id"] == e["pos_id"]:
+                        p["qty"] = round(max(float(p["qty"]) - delta, 0), 12)
+                portfolio._save(d)
+            e["done"] = vol
+            events.append({"txid": e["txid"], "pos": e["pos_id"], "result": "partial",
+                           "vol": vol, "price": px})
+        if st in ("open", "pending"):                 # still working
+            if time.time() - float(e.get("placed", 0)) >= requote:
+                try:
+                    _kraken_private("/0/private/CancelOrder",
+                                    {"nonce": str(int(time.time() * 1000)), "txid": e["txid"]})
+                except Exception:
+                    pass
+                d = portfolio._load()
+                for p in d["positions"]:
+                    if p["id"] == e["pos_id"]:
+                        p.pop("exit_txid", None)
+                portfolio._save(d)
+                try:
+                    _, taker = fees.rates(e["pair"])
+                    qty = float(pos["qty"])
+                    cost = float(pos["entry"]) * qty + float(pos.get("fee_entry") or 0)
+                    need = cost * (1 + min_net / 100) / (qty * (1 - taker))
+                    _, ask = _ticker(e["pair"])
+                    res2 = sell_position(e["pos_id"], e.get("reason") or "exit chase",
+                                         price=max(need, ask))
+                    events.append({"txid": e["txid"], "pos": e["pos_id"], "result": "requoted",
+                                   "new_txid": res2.get("txid"), "price": res2.get("price")})
+                except Exception as exc:
+                    events.append({"txid": e["txid"], "pos": e["pos_id"],
+                                   "result": f"requote-failed: {exc}"})
+                drop.add(e["txid"]); continue
+            continue
+        # canceled/expired with nothing (left) to fill -> release so exits.py retries
+        d = portfolio._load()
+        for p in d["positions"]:
+            if p["id"] == e["pos_id"]:
+                p.pop("exit_txid", None)
+        portfolio._save(d)
+        events.append({"txid": e["txid"], "pos": e["pos_id"], "result": f"{st}-unfilled"})
+        drop.add(e["txid"])
+    cur = _exit_load()                    # preserve any entry re-placed during requote
+    done_map = {e["txid"]: e["done"] for e in ex if "done" in e}
+    out = []
+    for x in cur:
+        if x.get("txid") in drop:
+            continue
+        if x.get("txid") in done_map:
+            x = {**x, "done": done_map[x["txid"]]}
+        out.append(x)
+    _exit_save(out)
+    return events
 
 
 def mark(pair: str, price: float) -> dict:

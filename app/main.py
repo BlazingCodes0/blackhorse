@@ -315,6 +315,15 @@ class BlackHorse(AgentsMixin, QMainWindow):
     def _build_dashboard(self):
         w = QWidget(); v = QVBoxLayout(w)
         v.addWidget(QLabel("Dashboard — system overview / OFF verification"))
+        self.dash_pnl = QLabel("TOTAL P&L  —")
+        self.dash_pnl.setFont(QFont("Monospace", 16))
+        self.dash_pnl.setWordWrap(True)
+        v.addWidget(self.dash_pnl)
+        self.dash_pnl_desc = QLabel("")
+        self.dash_pnl_desc.setFont(QFont("Monospace", 9))
+        self.dash_pnl_desc.setWordWrap(True)
+        self.dash_pnl_desc.setStyleSheet("color:#9aa0a6")
+        v.addWidget(self.dash_pnl_desc)
         self.dash_trade = QLabel("trade state: —")
         self.dash_trade.setFont(QFont("Monospace", 9))
         self.dash_trade.setWordWrap(True)
@@ -333,6 +342,27 @@ class BlackHorse(AgentsMixin, QMainWindow):
     def refresh_dashboard(self):
         import json, pathlib
         bh = pathlib.Path.home()/"blackhorse"
+        try:                                   # total P&L, pretty, attributed per agent
+            import sys
+            for p in (str(bh/"trade"), str(bh/"memory")):
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+            import portfolio
+            pnl = portfolio.pnl_by_agent()
+            tot = pnl["total"]
+            self.dash_pnl.setText(
+                f"TOTAL P&L   {'+' if tot >= 0 else '-'}${abs(tot):.4f}   "
+                f"(realized {pnl['realized']:+.4f}  ·  unrealized {pnl['unrealized']:+.4f})")
+            self.dash_pnl.setStyleSheet(f"color:{'#22c55e' if tot >= 0 else '#ef4444'}")
+            rows = sorted(pnl["agents"].items(), key=lambda kv: kv[1]["total"], reverse=True)
+            desc = [f"{a}: {v['total']:+.4f}  (real {v['realized']:+.4f} · unreal "
+                    f"{v['unrealized']:+.4f} · {v['closed']} closed / {v['open']} open)"
+                    for a, v in rows] or ["no positions yet — every agent at 0.0000"]
+            self.dash_pnl_desc.setText("each agent's contribution — " + "\n".join(desc))
+            self.dash_pnl.setToolTip("Contribution to total P&L by agent:\n" + "\n".join(desc))
+        except Exception as e:
+            self.dash_pnl.setText("TOTAL P&L  —")
+            self.dash_pnl_desc.setText(f"P&L unavailable: {e}")
         try:
             s = json.loads((bh/"logs"/"loop_state.json").read_text())
             if hasattr(self, 'loop_status'):

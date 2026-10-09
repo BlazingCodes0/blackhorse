@@ -27,7 +27,7 @@ REPORT = BH / "logs" / "edge_report.json"
 CRIT = BH / "config" / "edge_criteria.json"
 
 DEFAULT_CRIT = {"min_win_pct": 55.0, "min_n": 30, "min_avg_net_pct": 0.0,
-                "fee_pct_per_side": 0.26, "slip_pct_per_side": 0.1, "horizon": 5}
+                "fee_pct_per_side": 0.80, "slip_pct_per_side": 0.1, "horizon": 5}
 
 
 def criteria() -> dict:

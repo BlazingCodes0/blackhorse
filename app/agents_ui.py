@@ -432,7 +432,7 @@ class AgentsMixin:
                  "<b>" + ("ON — only PROVEN cells" if pol.get("require_proven_edge", False)
                           else "OFF — trades unproven setups") + "</b>"),
                 ("Buy when strength ≤", pol.get("entry_strength_max")),
-                ("Entry order", f"{pol.get('entry_order_type', 'market')} (expires {pol.get('entry_expiry_seconds', '-')}s)"),
+                ("Entry order", f"{pol.get('entry_order_type', 'limit')} (expires {pol.get('entry_expiry_seconds', '-')}s)"),
                 ("Sell zone strength ≥", pol.get("exit_strength_min")),
                 ("Min net profit to sell", f"{pol.get('exit_min_net_pct', '-')}%  · stored sets: {', '.join(pol.get('exit_price_sets') or [])}"),
                 ("Risk / max position", f"{pol.get('risk_per_trade_pct')}% / {pol.get('max_position_pct')}%"),

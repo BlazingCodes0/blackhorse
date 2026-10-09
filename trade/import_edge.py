@@ -25,7 +25,7 @@ GATE = QF / "codexGateBacktest.json"
 OUT = BH / "logs" / "edge_report.json"
 FLAG = BH / "logs" / "backtest_passed.flag"
 
-FEE_PCT = 0.26
+FEE_PCT = 0.80          # real Kraken base taker (was stale 0.26); see config/edge_criteria.json
 SLIP_PCT = 0.1
 
 
