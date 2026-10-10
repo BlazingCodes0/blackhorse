@@ -302,7 +302,7 @@ class AgentsMixin:
         v.addWidget(hg)
 
         scroll.setWidget(w)
-        self.pages[4] = scroll
+        self.pages[3] = scroll
         scroll.hide()
         self._agent_rows = []
         self._agent_fields = {}
@@ -797,7 +797,7 @@ class AgentsMixin:
     # ---------------------------------------------------------------- orders tab
     def _tick_agent_orders(self):
         try:
-            if self.pages[4].isVisible() and self.agent_tabs.currentWidget() is self.ag_orders_scroll:
+            if self.pages[3].isVisible() and self.agent_tabs.currentWidget() is self.ag_orders_scroll:
                 self._refresh_orders_tab()
         except Exception:
             pass

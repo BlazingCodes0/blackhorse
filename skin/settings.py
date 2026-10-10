@@ -31,13 +31,13 @@ DEFAULTS = {
     # keep_alive so the model stays resident between verdicts/chats (seconds; -1 = forever)
     "llm_keep_alive_seconds": 0,
 
-    # ---- BRAIN (opencode) — the expensive expert tier ----
-    # Master switch for the brain: false = no opencode calls at all.
-    "brain_enabled": True,
+    # ---- BRAIN — REMOVED (moved to the separate Mr.Fluffy app, ~/mrfluffy) ----
+    # BlackHorse is the trading horse: it never calls opencode. brain_enabled
+    # stays false; the knob is kept only so stale config can't re-arm it.
+    "brain_enabled": False,
 
-    # Allow whitecells to escalate unresolved threats to the brain. When false,
-    # the brain still does its own periodic sweep but skin never triggers it.
-    "whitecells_may_escalate": True,
+    # Whitecells never escalate to a brain that no longer lives here.
+    "whitecells_may_escalate": False,
 
     # Hard minimum gap between ANY two brain calls, in seconds (default 5 min).
     # Every call path shares this one budget (see brain_budget.py).
