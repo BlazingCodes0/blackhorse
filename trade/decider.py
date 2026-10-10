@@ -35,7 +35,8 @@ def _cfg() -> dict:
     defaults = {"risk_per_trade_pct": 1.0, "max_position_pct": 10.0,
                 "entry_strength_max": 0.25, "exit_strength_min": 0.75,
                 "min_reward_risk": 1.5, "stop_max_pct": 3.0,
-                "fee_pct_per_side": 0.80, "require_tide_context": True}
+                "fee_pct_per_side": 0.80, "require_tide_context": True,
+                "small_tf_strength_from_60m": True}
     try:
         return {**defaults, **json.loads(CFG.read_text())}
     except (json.JSONDecodeError, OSError):
@@ -94,6 +95,74 @@ def _strength(v):
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _iv_minutes(iv):
+    """'15m' -> 15, '120m' -> 120; None when the label is not '<n>m'."""
+    try:
+        s = str(iv or "")
+        return int(s.rstrip("m")) if s.endswith("m") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_small_tf(iv, max_min=15):
+    """True for the small lanes (15m or shorter) that must borrow 60m strength."""
+    m = _iv_minutes(iv)
+    return m is not None and m <= max_min
+
+
+def _shared_60m(channels: dict) -> dict:
+    """Range strength is trusted from the 60m lane (owner rule). Mirror of
+    _shared_15m: the 15m (and smaller) lanes' own strength is sloppy/noisy, so
+    whichever small lane we trade, the 60m lane supplies the strength band it
+    must obey. The 60m lane may be labeled any channel whose interval == '60m'."""
+    if not channels:
+        return {}
+    for name, c in channels.items():
+        if str(c.get("interval")) == "60m":
+            return {"label": name, "interval": "60m",
+                    "strength": c.get("strength"),
+                    "direction": c.get("strengthDirection")}
+    return {}
+
+
+def _pull_strength_60m(pair="DOT/USD", lookback=20):
+    """Compute the 60m range strength live from Kraken public OHLC when no 60m
+    lane is in the snapshot. Same formula as validate.py's _strength:
+    (close - low) / (high - low) over the last `lookback` CLOSED 60m bars.
+    Returns None on any failure (never blocks, just informs)."""
+    import urllib.request, urllib.parse
+    try:
+        sym = str(pair or "DOT/USD").replace("/", "").upper()
+        q = urllib.parse.urlencode({"pair": sym, "interval": 60})
+        d = json.loads(urllib.request.urlopen(
+            f"https://api.kraken.com/0/public/OHLC?{q}", timeout=10).read())
+        res = d.get("result", {}) or {}
+        rows = next((v for k, v in res.items() if k != "last"), [])
+        if len(rows) < lookback + 1:
+            return None
+        hist = rows[-(lookback + 1):-1]
+        lo = min(float(r[3]) for r in hist)
+        hi = max(float(r[2]) for r in hist)
+        close = float(rows[-1][4])
+        if hi <= lo:
+            return None
+        return (close - lo) / (hi - lo)
+    except Exception:
+        return None
+
+
+def _strength_60m_read(shared60: dict, pair) -> tuple:
+    """Prefer the snapshot's 60m lane; when that lane is absent (or its strength
+    is missing) PULL the 60m interval and compute its strength. -> (value, source)."""
+    v = _strength((shared60 or {}).get("strength"))
+    if v is not None:
+        return v, f"from 60m lane '{shared60.get('label')}'"
+    v = _pull_strength_60m(pair)
+    if v is not None:
+        return v, "pulled live from 60m candles"
+    return None, "unavailable"
 
 
 def _last_verdict():
@@ -172,27 +241,51 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
     # SPREAD TRUTH (owner rule): trust ONLY the 15m spread read. Other timeframes
     # are noise or too slow. Find the 15m lane regardless of which channel we trade.
     shared15 = _shared_15m(ch)
+    # RANGE-STRENGTH TRUTH (owner rule): the 15m (and smaller) lanes' own range
+    # strength is sloppy/noisy, so any agent on a small timeframe reads its
+    # strength band from the 60m lane instead — exactly as the higher lanes read
+    # spread/cross from 15m. Mirror of _shared_15m above.
+    shared60 = _shared_60m(ch)
+    small_from_60m = cfg.get("small_tf_strength_from_60m", True)
     cfg_buy = dict(cfg, require_proven_edge=False) if buy_override else cfg
     plans = []
     for name, c in (("ripple", ripple), ("wave", wave), ("tide", tide)):
         if allowed and name not in allowed:
             continue
         s = _strength(c.get("strength"))
+        direction = c.get("strengthDirection")
+        g60_note = None
+        if small_from_60m and _is_small_tf(c.get("interval")):
+            g, src = _strength_60m_read(shared60, pair or signal.get("pair"))
+            if g is None:
+                reasons.append(f"{name}: {c.get('interval')} lane skipped — no 60m range "
+                               f"strength (60m lane absent and 60m pull failed)")
+                continue
+            g60_note = (f"range strength is 60m ({src}): {round(g, 3)} — "
+                        f"15m-or-smaller lane does not trust its own sloppy strength")
+            reasons.append(f"{name}: {c.get('interval')} lane uses 60m range strength "
+                           f"{round(g, 3)} ({src})")
+            s = g
         if s is None:
             continue
         adv = c.get("advisor") or {}
         buy, sell = _num(adv.get("buy")), _num(adv.get("sell"))
-        direction = c.get("strengthDirection")
         # BUY
         if s <= cfg["entry_strength_max"] and not _missing(adv.get("buy")):
-            plans.append(_build(name, c, "BUY", buy, s, direction, available, cfg_buy, reasons, _edge, pair, shared15))
+            p = _build(name, c, "BUY", buy, s, direction, available, cfg_buy, reasons, _edge, pair, shared15)
+            if p and g60_note:
+                p["evidence"].append(g60_note); p["explain"].append(g60_note)
+            plans.append(p)
         # SELL (only if we can actually sell — advisor sell present)
         if s >= cfg["exit_strength_min"] and not _missing(adv.get("sell")):
             # SPOT-ONLY: cannot sell what we do not hold.
             if spot_only and float(holding or 0) <= 0:
                 reasons.append(f"{name} SELL skipped: spot-only, no inventory held")
             else:
-                plans.append(_build(name, c, "SELL", sell, s, direction, available, cfg, reasons, _edge, pair, shared15))
+                p = _build(name, c, "SELL", sell, s, direction, available, cfg, reasons, _edge, pair, shared15)
+                if p and g60_note:
+                    p["evidence"].append(g60_note); p["explain"].append(g60_note)
+                plans.append(p)
 
     plans = [p for p in plans if p]
     if not plans:

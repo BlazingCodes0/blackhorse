@@ -20,6 +20,7 @@
   "tag": "UNVALIDATED \u2014 not proven; paper only until a fee-honest backtest passes",
   "require_spread_agreement": false,
   "mtf_buy_override": true,
+  "small_tf_strength_from_60m": true,
   "entry_order_type": "limit",
   "entry_expiry_seconds": 600,
   "exit_price_sets": [
