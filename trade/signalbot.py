@@ -20,6 +20,7 @@ sys.path.insert(0, str(BH / "trade"))
 SIDECAR = BH / "trade" / "sidecar" / "signal.js"
 RAW_OUT = BH / "logs" / "signal_raw.json"
 LATEST = BH / "logs" / "signal_latest.json"
+DECIDER_CFG = BH / "config" / "decider.json"
 
 
 def _node() -> str:
@@ -279,6 +280,11 @@ def normalize(raw: dict, meta: dict) -> dict:
             _ch["setupScenario"] = _setup_scenario(_ch)
         except Exception:
             pass
+    # small-timeframe 60m strength gate (owner rule) — make it visible
+    try:
+        _gate_strength60(channels)
+    except Exception:
+        pass
     grids = raw.get("grids") or {}
     ms = raw.get("marketStructure") or {}
     return {
@@ -307,6 +313,77 @@ def _missing(v) -> bool:
         return float(v) == 0
     except (TypeError, ValueError):
         return True
+
+
+def _strength_bands() -> tuple:
+    """The user's threshold knobs, straight from config/decider.json so the
+    displayed 60m gate can never drift from what the decider actually enforces."""
+    try:
+        d = json.loads(DECIDER_CFG.read_text())
+        return (float(d.get("entry_strength_max", 0.25)),
+                float(d.get("exit_strength_min", 0.75)))
+    except Exception:
+        return 0.25, 0.75
+
+
+def _iv_minutes(iv):
+    """'15m' -> 15; None when the label is not '<n>m'."""
+    try:
+        s = str(iv or "")
+        return int(s.rstrip("m")) if s.endswith("m") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _lane_60(channels: dict) -> dict:
+    """The 60m lane, whatever its channel name — the small-timeframe strength gate."""
+    for n, c in channels.items():
+        if str(c.get("interval")) == "60m":
+            return {"label": n, "strength": c.get("strength")}
+    return {}
+
+
+def _gate_strength60(channels: dict):
+    """Stamp the 15m-or-smaller lanes with their 60m-strength-gated eligibility.
+
+    Owner rule: small lanes' OWN range strength is sloppy/noisy, so the decider
+    gates small-timeframe BUY/SELL on the 60m lane's strength (buy near 0, sell
+    near 1, mid = noise = blocked). This makes that gate visible in the snapshot
+    as entryEligible60/exitEligible60 + strengthGate60.note, so a raw 'False'
+    next to all-green indicators is never a mystery. Observability only — the
+    decider enforces the real gate at decision time.
+    """
+    s60 = _lane_60(channels)
+    entry_max, exit_min = _strength_bands()
+    for n, c in channels.items():
+        m = _iv_minutes(c.get("interval"))
+        if m is None or m > 15:
+            continue
+        raw_e = bool(c.get("entryEligible"))
+        raw_x = bool(c.get("exitEligible"))
+        try:
+            s = None if s60.get("strength") is None else float(s60["strength"])
+        except (TypeError, ValueError):
+            s = None
+        if s is None:
+            c["entryEligible60"] = raw_e
+            c["exitEligible60"] = raw_x
+            c["strengthGate60"] = {"note": "no 60m lane in snapshot — small-tf gate not "
+                                           "applied here (decider pulls 60m live)",
+                                   "s60": None, "source": None,
+                                   "buy_allowed": False, "sell_allowed": False}
+            continue
+        buy_ok = s <= entry_max
+        sell_ok = s >= exit_min
+        c["entryEligible60"] = raw_e and buy_ok
+        c["exitEligible60"] = raw_x and sell_ok
+        c["strengthGate60"] = {
+            "note": (f"60m str {round(s, 3)} via {s60.get('label')} · "
+                     f"BUY needs <= {entry_max}: {'ALLOW' if buy_ok else 'BLOCKED'} · "
+                     f"SELL needs >= {exit_min}: {'ALLOW' if sell_ok else 'BLOCKED'}"),
+            "s60": round(s, 4), "source": s60.get("label"),
+            "buy_allowed": buy_ok, "sell_allowed": sell_ok,
+        }
 
 
 def load() -> dict:

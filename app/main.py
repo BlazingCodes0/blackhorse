@@ -742,7 +742,14 @@ class BlackHorse(AgentsMixin, QMainWindow):
                 is15m = str(c.get('interval')) == "15m"
                 sv = rr.get('spreadVerdict')
                 # compact spread numbers; drop the raw "spread=weakening" word (line below carries it)
-                lines.append(f"    trend={rr.get('trendState')} RSI={r.get('currentRSI')} · entry eligible={c.get('entryEligible')} · exit eligible={c.get('exitEligible')}")
+                gate = c.get("strengthGate60")
+                if gate:
+                    # small lanes: entry/exit eligibility forced through the 60m
+                    # strength gate — say WHY, so 'all green but False' is never a mystery.
+                    lines.append(f"    trend={rr.get('trendState')} RSI={r.get('currentRSI')} · entry eligible={c.get('entryEligible')}→60m:{c.get('entryEligible60')} · exit eligible={c.get('exitEligible')}→60m:{c.get('exitEligible60')}")
+                    lines.append(f"    60m strength gate (small-tf rule): {gate.get('note')}")
+                else:
+                    lines.append(f"    trend={rr.get('trendState')} RSI={r.get('currentRSI')} · entry eligible={c.get('entryEligible')} · exit eligible={c.get('exitEligible')}")
                 if is15m and sv:
                     lines.append(f"    SPREAD latest={_n(rr.get('latestSpread'))} (was {_n(rr.get('intialSpread'))}) · verdict {sv.get('verdict')} · bias {sv.get('directionBias')} chop {sv.get('chopLevel')} str {sv.get('strength')} ({sv.get('bars')} bars) ⭐")
                 elif chg is not None:
