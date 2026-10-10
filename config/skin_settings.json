@@ -5,7 +5,7 @@
   "llm_timeout_seconds": 13,
   "llm_model": "qwen2.5:0.5b",
   "llm_keep_alive_seconds": 0,
-  "brain_enabled": true,
+  "brain_enabled": false,
   "whitecells_may_escalate": false,
   "brain_min_seconds_between_calls": 300,
   "brain_max_calls_per_hour": 10,

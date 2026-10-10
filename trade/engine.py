@@ -70,7 +70,6 @@ def snapshot() -> dict:
         pass
     desc = exchanges.connection_descriptor(active) if active else None
     sig = _load_json(SIGNAL, None)
-    brain = _tail_jsonl(BRAIN_LOG, 1)
     try:
         import news
         nctx = news.get()
@@ -93,25 +92,18 @@ def snapshot() -> dict:
                  "global": nctx.get("global"),
                  "headlines": [h.get("title") for h in nctx.get("headlines", [])][:10]},
         "signal": sig if sig else {"available": False},
-        "brain_verdict": next((b.get("verdict") for b in reversed(brain)
-                               if isinstance(b.get("verdict"), dict)
-                               and b["verdict"].get("bias")
-                               and not b["verdict"].get("parse_error")), None),
-        "brain_last_error": brain[-1].get("verdict", {}).get("notes")
-                            if brain and not (isinstance(brain[-1].get("verdict"), dict) and brain[-1]["verdict"].get("bias"))
-                            else None,
     }
 
 
 if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "snapshot"
-    if cmd == "exchanges":
+    args = sys.argv[1:]
+    if args == ["exchanges"]:
         import exchanges
         print(json.dumps(exchanges.list_exchanges(), indent=2))
-    elif cmd == "news":
+    elif args == ["news"]:
         import news
         print(json.dumps(news.get(), indent=2))
-    elif cmd == "ask":
+    elif args == ["ask"]:
         import coach
         print(json.dumps(coach.ask_brain(coach.build_packet()), indent=2))
     else:

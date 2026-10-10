@@ -51,61 +51,6 @@ _SCEN_WHY = {
     "6": "why not buy: wait for the 15m up-tick — the 60m/240m scores are nearly there, but the trigger lane stays 15m.",
 }
 
-_SCEN_LINES = [  # kept verbatim — these are the owner's decision rubric
-    "Scenario 1 — RSI washout, price holds above low\n- BuyScore often rises as RSI drops (range floor buys). If RSI ≤ 35 and score ≥ 0.60 and spread mode is not_against → 15m BUY fires. This is the profile's bread-and-butter setup. Buy.",
-    "Scenario 2 — RSI ≤ 35 but spread still weakening\n- RSI gate passes, but spreadMode for 15m fails. Why not buy: catching a knife while the spread is still deteriorating is where floor buys historically lost. Wait.",
-    "Scenario 3 — SpreadMA flips bullish, trend turns up, price above low\n- Everything green: spreadMode ok, RSI likely rising from oversold, 240m tide confirming. Buy — often a few bars after the exact low, which is the tax we accept.",
-    "Scenario 4 — Price slices through low/floor\n- trendState degrades, range invalidation triggers, spreadMA not bullish. No buy — a floor that won't hold isn't a floor.",
-    "Scenario 5 — 15m strength == 0 while 240m strength rising\n- 15m strength=0 means the 15m isn't leading — defer to tide/240m for direction, use 15m only for entry timing: wait for 15m strength rising off 0 + RSI turning up from ≤35. Don't market-buy the zero.",
-    "Scenario 6 — 60m/240m scores nearly threshold-broken, 15m weak\n- If we let 15m be the final gate we can stay flat while 240m rides a floor→mid-range mean reversion. Practically: watch 15m strength rising from 0 as the trigger even if the 15m range signal is neutral.",
-]
-
-def _edge_postscript():
-    """Owner-style edge readout for the brain verdict panel:
-    a live 'Now (baseline)' line computed from the freshest signal file,
-    then the scenario rubric verbatim, then the gate booleans."""
-    import json as _j
-    sig = None; src = None
-    for cand in (Path.home()/"blackhorse"/"logs"/"signal_preview.json",
-                 Path.home()/"blackhorse"/"logs"/"signal_latest.json"):
-        try:
-            if cand.exists():
-                s = _j.loads(cand.read_text())
-                if isinstance(s, dict) and s.get("available"):
-                    sig, src = s, ("preview" if "preview" in cand.name else "bot")
-                    break
-        except Exception:
-            continue
-    if not sig:
-        return "\n— edge posture —\n(no signal data yet — click ▶ Run SignalBot now to populate this)"
-    chans = sig.get("channels") or {}
-    ripple = chans.get("ripple") or next(iter(chans.values()), {})
-    rsi_vals = [c.get("RSI", {}).get("currentRSI") for c in chans.values()]
-    rsi_vals = [v for v in rsi_vals if isinstance(v, (int, float))]
-    rsi_span = f"{min(rsi_vals):.0f}–{max(rsi_vals):.0f}" if len(rsi_vals) >= 2 else (f"{rsi_vals[0]:.0f}" if rsi_vals else "?")
-    spreads = {str(c.get("marketResult", {}).get("spreadDirection") or "?") for c in chans.values()}
-    spread_txt = spreads.pop() if len(spreads) == 1 else "mixed " + "/".join(sorted(spreads))
-    buys = "/".join(c.get("interval", "?") for c in chans.values() if str(c.get("rangeSignal")).upper() == "BUY") or "none"
-    ripple_reason = ripple.get("reason") or "no interval-specific historical setup crossed its action threshold."
-    sc = str(ripple.get("setupScenario") or "none")
-    eg = ripple.get("entryGate") or {}
-    gates = ", ".join(f"{k}={('✓' if v else '✗')}" for k, v in eg.items() if k != "allPass")
-    lines = [
-        f"\n— edge posture — (source: {src}, ts {sig.get('ts','?')[11:16]} UTC)",
-        f"Now (baseline) — {ripple.get('action','?')} (conf {ripple.get('confidence')})",
-        f"- Range map says BUY on {buys}, but RSI {rsi_span} (gate needs ≤35), spread {spread_txt}, 15m buyScore {ripple.get('buyScore')}.",
-        f"  Why not buy: {ripple_reason}",
-        f"- Current scenario: {sc}",
-        "  Why not sell: sell gate closed everywhere — sellScore ~0 and this is spot-only; no short lane to chase.",
-        "",
-        "Scenario rubric:",
-    ] + _SCEN_LINES + [
-        "",
-        f"Live entry gate (ripple/15m): {gates}",
-    ]
-    return "\n".join(lines)
-
-
 def _fmt_ts(ts):
     """2026-10-06T20:48:02Z -> Oct 06 8:48 PM (local)"""
     try:
@@ -151,7 +96,7 @@ class BlackHorse(AgentsMixin, QMainWindow):
         title.setStyleSheet("color:#6b7280")
         side.addWidget(title)
         self.nav = QListWidget(); self.nav.setObjectName("nav")
-        for page in ["Dashboard", "Skin (Defense)", "Brain (Decide)", "Trade (Exchange)", "Agents", "Heart (Filter)", "Console", "Stories", "Motar (Agents)"]:
+        for page in ["Dashboard", "Skin (Defense)", "Trade (Exchange)", "Agents", "Heart (Filter)", "Console", "Stories", "Motar (Agents)"]:
             self.nav.addItem(QListWidgetItem(page))
         self.nav.setMaximumWidth(180)
         self.nav.currentRowChanged.connect(self.switch_page)
@@ -166,7 +111,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
         cl.addWidget(self._build_master_bar())
         cl.addWidget(self._build_dashboard())
         cl.addWidget(self._build_skin())
-        cl.addWidget(self._build_brain())
         cl.addWidget(self._build_trade())
         cl.addWidget(self._build_agents())
         cl.addWidget(self._build_heart())
@@ -183,14 +127,13 @@ class BlackHorse(AgentsMixin, QMainWindow):
 
         # live-refresh the threat log
         self.timer = QTimer(self); self.timer.timeout.connect(self.refresh_log); self.timer.start(10000)
-        self.timer2 = QTimer(self); self.timer2.timeout.connect(self.refresh_brain); self.timer2.start(10000)
         self.timer3 = QTimer(self); self.timer3.timeout.connect(self.refresh_master); self.timer3.start(10000)
         self.timer4 = QTimer(self); self.timer4.timeout.connect(self.refresh_console); self.timer4.start(10000)
         self.timer5 = QTimer(self); self.timer5.timeout.connect(self.refresh_dashboard); self.timer5.start(10000)
         import os as _os
         if _os.environ.get("BLACKHORSE_PROFILE"):
             import time as _time
-            for _name in ("refresh_log", "refresh_brain", "refresh_master",
+            for _name in ("refresh_log", "refresh_master",
                           "refresh_console", "refresh_dashboard", "refresh_trade",
                           "refresh_agents", "refresh_heart", "refresh_active_defense",
                           "refresh_skin_status"):
@@ -405,7 +348,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
         lines = [f"master_enabled (on disk) : {'ON' if master else 'OFF'}"]
         lines.append(f"engines                  : {'on' if master and any(s['engines'].values()) else 'OFF'}")
         lines.append(f"local fallback model     : {'on' if master and s.get('llm_enabled') else 'OFF'}")
-        lines.append(f"brain (opencode)         : {'on' if master and s.get('brain_enabled') else 'OFF'}")
         lines.append(f"whitecell escalation     : {'on' if master and s.get('whitecells_may_escalate') else 'OFF'}")
         # systemd service
         st = self._systemctl("is-active", "blackhorse-defense.service").stdout.strip() or "not set up"
@@ -436,122 +378,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
         self.dash_status.setText(verdict + "\n\n" + "\n".join(lines))
         self.dash_status.setStyleSheet(f"color:{color}")
 
-    def _build_brain(self):
-        w = QWidget(); v = QVBoxLayout(w)
-        v.addWidget(QLabel("BRAIN — opencode guardian (the brain). Skin is its war room."))
-        self.brain_state = QLabel("daemon: checking…")
-        v.addWidget(self.brain_state)
-        self.brain_budget = QLabel("brain budget: —")
-        v.addWidget(self.brain_budget)
-
-        # ---- brain controls ----
-        from PyQt6.QtWidgets import QCheckBox, QSpinBox
-        s = settings.load()
-        self.cb_brain = QCheckBox("Brain ON (uncheck = never call opencode)")
-        self.cb_brain.setChecked(s.get("brain_enabled", True))
-        self.cb_brain.stateChanged.connect(self.save_brain_settings)
-        v.addWidget(self.cb_brain)
-        self.cb_escalate = QCheckBox("Whitecells may ask the brain (escalate unresolved threats)")
-        self.cb_escalate.setChecked(s.get("whitecells_may_escalate", True))
-        self.cb_escalate.stateChanged.connect(self.save_brain_settings)
-        v.addWidget(self.cb_escalate)
-
-        for label, key, rng in [("Min gap between brain calls (s)", "brain_min_seconds_between_calls", (60, 3600)),
-                                ("Brain calls per hour (max)", "brain_max_calls_per_hour", (1, 60)),
-                                ("Brain sweep interval (s)", "brain_sweep_seconds", (60, 3600))]:
-            row = QHBoxLayout(); row.addWidget(QLabel(label))
-            sb = QSpinBox(); sb.setRange(*rng); sb.setValue(int(s.get(key, rng[0])))
-            sb.valueChanged.connect(self.save_brain_settings)
-            setattr(self, f"sb_{key}", sb)
-            row.addWidget(sb); v.addLayout(row)
-
-        brow = QHBoxLayout()
-        b_sweep = QPushButton("Sweep brain now"); b_sweep.clicked.connect(self.brain_sweep_now)
-        b_silence = QPushButton("Reset brain budget (clear cooldown)")
-        b_silence.clicked.connect(self.brain_reset_budget)
-        brow.addWidget(b_sweep); brow.addWidget(b_silence)
-        v.addLayout(brow)
-
-        # periodic edge_rules study toggle
-        from PyQt6.QtWidgets import QCheckBox, QSpinBox
-        self.cb_edge_rules = QCheckBox("Run edge_rules study periodically")
-        self.edge_rules_cfg = json.loads((Path.home()/"blackhorse"/"config"/"edge_rules.json").read_text()) if (Path.home()/"blackhorse"/"config"/"edge_rules.json").exists() else {"enabled": True, "every_minutes": 60}
-        self.cb_edge_rules.setChecked(self.edge_rules_cfg.get("enabled", True))
-        self.cb_edge_rules.stateChanged.connect(self._on_edge_rules_toggle)
-        v.addWidget(self.cb_edge_rules)
-        row2 = QHBoxLayout(); row2.addWidget(QLabel("every (min)"))
-        self.sb_edge_minutes = QSpinBox(); self.sb_edge_minutes.setRange(5, 1440); self.sb_edge_minutes.setValue(int(self.edge_rules_cfg.get("every_minutes", 60)))
-        self.sb_edge_minutes.valueChanged.connect(self._on_edge_minutes_changed)
-        row2.addWidget(self.sb_edge_minutes); row2.addStretch(1); v.addLayout(row2)
-        self.edge_rules_timer = QTimer(self); self.edge_rules_timer.timeout.connect(self.run_edge_rules_update); self.edge_rules_timer.start(5000)  # tick 1s, each tick check last_ts
-        self._last_edge_rules_run = 0
-
-        self.brain_view = QTextEdit(); self.brain_view.setReadOnly(True)
-        self.brain_view.setFont(QFont("Monospace", 9))
-        self.brain_view.setUndoRedoEnabled(False)
-        self.brain_view.document().setMaximumBlockCount(500)
-        v.addWidget(self.brain_view)
-        b_row = QHBoxLayout()
-        b_clear = QPushButton("Clear view"); b_clear.clicked.connect(lambda: self.brain_view.clear())
-        b_wipe = QPushButton("Archive history file")
-        def _wipe():
-            import shutil, time
-            f = Path.home()/"blackhorse"/"logs"/"mastermind.jsonl"
-            if f.exists():
-                shutil.move(str(f), str(f) + "." + time.strftime("%Y%m%d%H%M%S"))
-            self.brain_view.clear()
-        b_wipe.clicked.connect(_wipe)
-        b_row.addWidget(b_clear); b_row.addWidget(b_wipe); b_row.addStretch(1)
-        v.addLayout(b_row)
-        row = QHBoxLayout()
-        self.brain_input = QLineEdit(); self.brain_input.setPlaceholderText("Inject a message into the mastermind session…")
-        self.brain_input.returnPressed.connect(self.brain_send)
-        btn = QPushButton("Send to mastermind"); btn.clicked.connect(self.brain_send)
-        row.addWidget(self.brain_input); row.addWidget(btn)
-        v.addLayout(row)
-        self.pages[2] = w; w.hide(); return w
-
-    def _brain_cfg(self):
-        cfg = settings.load()
-        cfg["brain_enabled"] = self.cb_brain.isChecked()
-        cfg["whitecells_may_escalate"] = self.cb_escalate.isChecked()
-        for key in ("brain_min_seconds_between_calls", "brain_max_calls_per_hour", "brain_sweep_seconds"):
-            cfg[key] = getattr(self, f"sb_{key}").value()
-        return cfg
-
-    def save_brain_settings(self):
-        settings.save(self._brain_cfg())
-        self.brain_state.setText("brain settings saved — live next cycle")
-
-    def brain_sweep_now(self):
-        threading.Thread(target=lambda: subprocess.run(
-            [sys.executable, str(Path.home()/"blackhorse"/"skin"/"brain.py"), "sweep"],
-            capture_output=True, cwd=Path.home()/"blackhorse"), daemon=True).start()
-        QTimer.singleShot(2500, self.refresh_brain)
-
-    def brain_reset_budget(self):
-        try:
-            import brain_budget
-            brain_budget.reset()
-        except Exception as e:
-            self.brain_state.setText(f"budget reset failed: {e}")
-        self.refresh_brain()
-
-    def brain_send(self):
-        q = self.brain_input.text().strip()
-        if not q: return
-        self.brain_input.clear()
-        self._brain_pending = q  # shown by refresh_brain until the reply lands in the log
-        self._brain_reply = None
-        def _run():
-            r = subprocess.run(
-                [sys.executable, str(Path.home()/"blackhorse"/"skin"/"mastermind.py"), "ask", q],
-                capture_output=True, cwd=Path.home()/"blackhorse", text=True)
-            self._brain_reply = (r.stdout.strip() or r.stderr.strip()[:200] or "(no reply)")
-        threading.Thread(target=_run, daemon=True).start()
-        QTimer.singleShot(400, self._brain_poll_reply)
-
-
     def _on_edge_rules_toggle(self, _state):
         cfg = getattr(self, "edge_rules_cfg", {})
         cfg["enabled"] = bool(self.cb_edge_rules.isChecked())
@@ -579,72 +405,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
             (Path.home()/"blackhorse"/"logs"/"edge_rules_run.log").write_text((r.stdout or "") + "\n=== STDERR ===\n" + (r.stderr or ""))
         threading.Thread(target=_work, daemon=True).start()
 
-    def _brain_poll_reply(self):
-        reply = getattr(self, "_brain_reply", None)
-        if reply is None:
-            QTimer.singleShot(400, self._brain_poll_reply)
-            return
-        _sb = self.brain_view.verticalScrollBar()
-        _stick = _sb.value() >= _sb.maximum() - 40
-        self.brain_view.append(f"brain: {reply}")
-        if _stick: _sb.setValue(_sb.maximum())
-        self._brain_reply = None
-        self._brain_pending = None
-
-    def refresh_brain(self):
-        import json
-        state = Path.home()/"blackhorse"/"logs"/"mastermind_state.json"
-        self.brain_state.setText(f"state file: {state.read_text() if state.exists() else 'not started — click Wake mastermind in Skin page'}")
-        try:
-            import brain_budget
-            b = brain_budget.status()
-            self.brain_budget.setText(
-                f"brain budget: {b['calls_last_hour']}/{b['max_calls_per_hour']} calls this hour · "
-                f"gap {b['min_seconds_between_calls']}s · "
-                + (f"ready" if b['allowed'] else f"wait {b['seconds_until_next']}s"))
-        except Exception as e:
-            self.brain_budget.setText(f"brain budget: unavailable ({e})")
-        out = Path.home()/"blackhorse"/"logs"/"mastermind.jsonl"
-        try:
-            import os as _os
-            _mtime = _os.path.getmtime(out) if out.exists() else 0
-        except OSError:
-            _mtime = 0
-        _pending_now = getattr(self, "_brain_pending", None)
-        if (_mtime, _pending_now) != getattr(self, "_brain_key", None):
-            self._brain_key = (_mtime, _pending_now)
-            lines = []
-            if out.exists():
-                # read only the tail so an ever-growing file stays cheap
-                with open(out, "rb") as fh:
-                    fh.seek(0, 2); size = fh.tell()
-                    fh.seek(max(0, size - 256*1024))
-                    lines = fh.read().decode(errors="ignore").splitlines()[-60:]
-            rows = []
-            for l in lines:
-                try:
-                    e = json.loads(l)
-                except Exception:
-                    continue
-                if e.get("kind") == "trade":
-                    continue  # trade prompts belong on the Trade page, not here
-                if "BlackHorse trading brain" in str(e.get("q", "")):
-                    continue  # legacy un-tagged trade prompts
-                rows.append(f"YOU: {e.get('q','')}\nGUARDIAN: {str(e.get('a',''))[:400]}\n")
-            base = "\n".join(rows)
-            target = base + (f"\nYOU: {_pending_now}\nGUARDIAN: … thinking\n" if _pending_now else "")
-            if getattr(self, "_brain_last_view", None) != target:
-                # preserve the user's scroll position unless they were at the bottom
-                sb = self.brain_view.verticalScrollBar()
-                was_at_bottom = sb.value() >= sb.maximum() - 40
-                prev = sb.value()
-                self.brain_view.setPlainText(target)
-                sb.setValue(sb.maximum() if was_at_bottom else prev)
-                self._brain_last_view = target
-            else:
-                # view content unchanged — leave selection/scroll intact
-                pass
-
     def _build_placeholder(self, name, msg):
         w = QWidget(); v = QVBoxLayout(w); v.addWidget(QLabel(msg))
         self.pages[len(self.pages)] = w; w.hide(); return w
@@ -665,12 +425,9 @@ class BlackHorse(AgentsMixin, QMainWindow):
 
         # ---- prominent top actions ----
         top = QHBoxLayout()
-        b_ask_top = QPushButton("🧠 Ask brain now")
-        b_ask_top.setStyleSheet("background:#3730a3;color:white;font-weight:bold;padding:8px")
-        b_ask_top.clicked.connect(self.ask_brain_now)
         b_refresh_top = QPushButton("↻ Refresh")
         b_refresh_top.clicked.connect(self.refresh_trade)
-        top.addWidget(b_ask_top); top.addWidget(b_refresh_top); top.addStretch(1)
+        top.addWidget(b_refresh_top); top.addStretch(1)
         v.addLayout(top)
 
         # ---- exchange selector ----
@@ -716,13 +473,8 @@ class BlackHorse(AgentsMixin, QMainWindow):
         self.auto_warning.setWordWrap(True); self.auto_warning.setStyleSheet("color:#9ca3af;font-size:11px")
         v.addWidget(self.auto_warning)
 
-        # ---- brain budget countdown ----
-        self.budget_label = QLabel("brain budget: —")
-        self.budget_label.setStyleSheet("color:#9ca3af")
-        v.addWidget(self.budget_label)
-
         # ---- treasury (the "100") ----
-        v.addWidget(QLabel("— Treasury (capital the brain may use) —"))
+        v.addWidget(QLabel("— Treasury (capital agents may deploy) —"))
         self.treasury_label = QLabel("—")
         self.treasury_label.setFont(QFont("Monospace", 9))
         v.addWidget(self.treasury_label)
@@ -748,12 +500,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
         self.news_view = QTextEdit(); self.news_view.setReadOnly(True); self.news_view.setMaximumHeight(120)
         self.news_view.setFont(QFont("Monospace", 9))
         v.addWidget(self.news_view)
-
-        # ---- brain verdict ----
-        v.addWidget(QLabel("— Brain verdict (opencode; budgeted, minutes-spaced) —"))
-        self.verdict_view = QTextEdit(); self.verdict_view.setReadOnly(True); self.verdict_view.setMaximumHeight(140)
-        self.verdict_view.setFont(QFont("Monospace", 9))
-        v.addWidget(self.verdict_view)
 
         # ---- signal ----
         v.addWidget(QLabel("— SignalBot signal (via sidecar; real run, no reimplementation) —"))
@@ -806,17 +552,16 @@ class BlackHorse(AgentsMixin, QMainWindow):
         b_loop_stop = QPushButton("■ Stop loop"); b_loop_stop.clicked.connect(self._loop_stop)
         from PyQt6.QtWidgets import QSpinBox
         self.loop_interval = QSpinBox(); self.loop_interval.setRange(30, 3600); self.loop_interval.setValue(300)
-        self.loop_use_brain = QCheckBox("ask brain each cycle"); self.loop_use_brain.setChecked(False)
         lrow.addWidget(b_loop_start); lrow.addWidget(b_loop_stop)
         lrow.addWidget(QLabel("every")); lrow.addWidget(self.loop_interval); lrow.addWidget(QLabel("s"))
-        lrow.addWidget(self.loop_use_brain); lrow.addStretch(1)
+        lrow.addStretch(1)
         v.addLayout(lrow)
         self.loop_status = QLabel("loop stopped")
         v.addWidget(self.loop_status)
         v.addStretch(1)
 
         scroll.setWidget(w)
-        self.pages[3] = scroll; scroll.hide()
+        self.pages[2] = scroll; scroll.hide()
         QTimer.singleShot(400, self.refresh_trade)
         self.timer_trade = QTimer(self); self.timer_trade.timeout.connect(self.refresh_trade); self.timer_trade.start(10000)
         return scroll
@@ -970,14 +715,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
         self.news_label.setText(n.get("summary", "—"))
         hl = n.get("headlines", [])
         self.news_view.setPlainText("\n".join(f"• {h}" for h in hl) or "(no headlines)")
-        bv = snap.get("brain_verdict")
-        try:
-            import coach as _coach_mod
-            _bv_text = _coach_mod._fmt_verdict(bv) + _edge_postscript() if bv else "no verdict yet — click 'Ask brain now'"
-        except Exception:
-            import json as _json
-            _bv_text = (_json.dumps(bv, indent=2) if bv else "no verdict yet — click 'Ask brain now'") + _edge_postscript()
-        self.verdict_view.setPlainText(_bv_text)
         sig = snap.get("signal", {})
         _sig_src = "bot live"
         # the signal block shows the user's manual preview run when one exists —
@@ -1036,26 +773,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
             self.signal_view.setPlainText(sig.get("error", "not run yet — click 'Run SignalBot now'"))
             self.signal_status.setText("not run")
             self.signal_status.setStyleSheet("color:#9ca3af")
-        # budget countdown
-        try:
-            import sys as _s
-            if str(Path.home()/"blackhorse"/"skin") not in _s.path:
-                _s.path.insert(0, str(Path.home()/"blackhorse"/"skin"))
-            import brain_budget
-            b = brain_budget.status()
-            if b["allowed"]:
-                self.budget_label.setText(
-                    f"brain budget: ready · {b['calls_last_hour']}/{b['max_calls_per_hour']} this hour · "
-                    f"gap {b['min_seconds_between_calls']}s")
-                self.budget_label.setStyleSheet("color:#22c55e")
-            else:
-                m, s = divmod(b["seconds_until_next"], 60)
-                self.budget_label.setText(
-                    f"brain budget: cooling down · next call in {m}:{s:02d} · "
-                    f"{b['calls_last_hour']}/{b['max_calls_per_hour']} this hour")
-                self.budget_label.setStyleSheet("color:#f59e0b")
-        except Exception as e:
-            self.budget_label.setText(f"brain budget: unavailable ({e})")
         # treasury — in LIVE, reconcile from the exchange so the page cannot lie
         try:
             import sys as _s
@@ -1189,31 +906,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
             QTimer.singleShot(1000, _wait)
         QTimer.singleShot(1000, _wait)
 
-    def ask_brain_now(self):
-        import threading
-        self.verdict_view.setPlainText("asking brain… (budgeted; may defer if cooling down)")
-        self._brain_ask_result = {"done": False}
-        def _work():
-            try:
-                _, engine = self._trade_mod()
-                import sys as _s
-                _s.path.insert(0, str(Path.home()/"blackhorse"/"trade"))
-                import coach
-                v = coach.ask_brain(coach.build_packet())
-                self._brain_ask_result = {"done": True, "text": coach._fmt_verdict(v) + _edge_postscript()}
-            except Exception as e:
-                self._brain_ask_result = {"done": True, "text": f"(brain error: {e})" + _edge_postscript()}
-        def _apply():
-            r = self._brain_ask_result
-            if r.get("done"):
-                self.verdict_view.setPlainText(r["text"])
-            else:
-                QTimer.singleShot(1000, _apply)
-        def _start():
-            threading.Thread(target=_work, daemon=True).start()
-            QTimer.singleShot(1000, _apply)
-        _start()
-
     # ================= AGENTS (the bodies) =================
     def _agents_mod(self):
         import sys as _s
@@ -1257,7 +949,7 @@ class BlackHorse(AgentsMixin, QMainWindow):
         v.addStretch(1)
 
         scroll.setWidget(w)
-        self.pages[5] = scroll; scroll.hide()
+        self.pages[4] = scroll; scroll.hide()
         QTimer.singleShot(400, self.refresh_heart)
         return scroll
 
@@ -1330,7 +1022,7 @@ class BlackHorse(AgentsMixin, QMainWindow):
         live_note.setWordWrap(True); live_note.setStyleSheet("color:#9ca3af;font-size:11px")
         lv.addWidget(live_note)
         tabs.addTab(live, "LIVE 🔒")
-        self.pages[6] = w; w.hide()
+        self.pages[5] = w; w.hide()
         return w
 
     def refresh_console(self):
@@ -1417,9 +1109,7 @@ class BlackHorse(AgentsMixin, QMainWindow):
         if getattr(self, "_loop_proc", None) and self._loop_proc.poll() is None:
             self.loop_status.setText("loop already running"); return
         args = [sys.executable, str(Path.home()/"blackhorse"/"trade"/"loop.py"),
-                "--interval", str(self.loop_interval.value())]
-        if not self.loop_use_brain.isChecked():
-            args.append("--no-brain")
+                "--interval", str(self.loop_interval.value()), "--no-brain"]
         self._loop_proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.loop_status.setText(f"loop RUNNING (pid {self._loop_proc.pid}, every {self.loop_interval.value()}s)")
 
@@ -1501,7 +1191,7 @@ class BlackHorse(AgentsMixin, QMainWindow):
         self.stories_prompt.setPlaceholderText("Ask for a scene, add a chapter, or open a project like the book...")
         b_ask = QPushButton("Send to Spice"); b_ask.clicked.connect(self._stories_send)
         row2.addWidget(self.stories_prompt,1); row2.addWidget(b_ask); v.addLayout(row2)
-        self.pages[7] = w; w.hide()
+        self.pages[6] = w; w.hide()
         try: self._stories_refresh()
         except Exception: pass
         return w
@@ -1865,29 +1555,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
             os.execv(sys.executable, [sys.executable] + sys.argv)
         btn_restart.clicked.connect(_restart)
         v.addWidget(btn_restart)
-        btn_wake = QPushButton("Wake brain (opencode sweep daemon)")
-        self._mm_proc = None
-        def _wake():
-            from pathlib import Path as _P
-            if self._mm_proc and self._mm_proc.poll() is None:
-                self._mm_proc.terminate(); self._mm_proc = None
-                btn_wake.setText("Wake brain (opencode sweep daemon)")
-                return
-            self._mm_proc = subprocess.Popen([sys.executable, str(_P.home()/"blackhorse"/"skin"/"brain.py"), "daemon"])
-            btn_wake.setText("Brain AWAKE — click to sleep")
-        btn_wake.clicked.connect(_wake)
-        v.addWidget(btn_wake)
-
-        # ---- TAP: talk to skin ----
-        v.addWidget(QLabel("— TAP: ask the brain a direct question (one-shot, bypasses budget) —"))
-        self.tap_log = QTextEdit(); self.tap_log.setReadOnly(True); self.tap_log.setMaximumHeight(140)
-        v.addWidget(self.tap_log)
-        tap_row = QHBoxLayout()
-        self.tap_input = QLineEdit(); self.tap_input.setPlaceholderText("Ask skin anything: 'what happened last night?', 'why was pid X killed?'")
-        self.tap_input.returnPressed.connect(self.tap_send)
-        btn_tap = QPushButton("Send"); btn_tap.clicked.connect(self.tap_send)
-        tap_row.addWidget(self.tap_input); tap_row.addWidget(btn_tap)
-        v.addLayout(tap_row)
         v.addStretch(1)
 
         scroll.setWidget(w)
@@ -2009,23 +1676,6 @@ WantedBy=default.target
             getattr(self, f"sb_{key}").setValue(s[key])
         for eng in ("net_check", "watchdog", "egress", "integrity"):
             getattr(self, f"cb_eng_{eng}").setChecked(s["engines"][eng])
-
-    def tap_send(self):
-        q = self.tap_input.text().strip()
-        if not q: return
-        self.tap_input.clear()
-        self.tap_log.append(f"<b>you:</b> {q}")
-        threading.Thread(target=self._tap_answer, args=(q,), daemon=True).start()
-
-    def _tap_answer(self, q):
-        try:
-            from pathlib import Path as P
-            proc = subprocess.run([sys.executable, str(P.home()/"blackhorse"/"skin"/"mastermind.py"), "ask", q],
-                                  capture_output=True, text=True, timeout=240)
-            out = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else (proc.stderr.strip()[:200] or "(no answer)")
-        except Exception as e:
-            out = f"(skin offline or busy: {e})"
-        self.tap_log.append(f"<b>skin:</b> {out}")
 
     def refresh_skin_status(self):
         r = self._systemctl("is-active", "blackhorse-defense.service")

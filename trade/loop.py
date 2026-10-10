@@ -96,8 +96,11 @@ def _pair_step(pair, primary, refresh_signal, ask_brain, cfg, setup) -> dict:
         prec["marks"] = f"error: {e}"
 
     # think (budgeted; PRIMARY pair only — the brain verdict is global context)
+    # NOTE: brain moved to the Mr.Fluffy app (~/mrfluffy). BlackHorse is
+    # trading-only by default; a loop only consults a brain if cfg/loop.json
+    # explicitly sets "use_brain": true (and even then brain_enabled gates it).
     verdict = None
-    if ask_brain and pair == primary:
+    if ask_brain and pair == primary and cfg.get("use_brain", False):
         try:
             last = _load(BH / "logs" / "loop_brain_meta.json", {})
             last_ts = last.get("ts", 0) or 0
