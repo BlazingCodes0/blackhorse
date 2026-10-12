@@ -335,55 +335,80 @@ def _iv_minutes(iv):
         return None
 
 
-def _lane_60(channels: dict) -> dict:
-    """The 60m lane, whatever its channel name — the small-timeframe strength gate."""
-    for n, c in channels.items():
-        if str(c.get("interval")) == "60m":
-            return {"label": n, "strength": c.get("strength")}
-    return {}
-
-
 def _gate_strength60(channels: dict):
-    """Stamp the 15m-or-smaller lanes with their 60m-strength-gated eligibility.
+    """Stamp the 15m-or-smaller lanes with their strength-chain-gated eligibility.
 
-    Owner rule: small lanes' OWN range strength is sloppy/noisy, so the decider
-    gates small-timeframe BUY/SELL on the 60m lane's strength (buy near 0, sell
-    near 1, mid = noise = blocked). This makes that gate visible in the snapshot
-    as entryEligible60/exitEligible60 + strengthGate60.note, so a raw 'False'
-    next to all-green indicators is never a mystery. Observability only — the
-    decider enforces the real gate at decision time.
+    Owner rule: a small lane's OWN range strength is sloppy/noisy, so the decider
+    gates small-timeframe BUY/SELL on a ladder of higher-timeframe strengths — 60m,
+    then 240m, then 1440m — each rung with its own buy/sell band (decider.json).
+    This makes that gate visible in the snapshot as entryEligible60/exitEligible60
+    + strengthGate60.note, so a raw 'False' next to all-green indicators is never a
+    mystery. Observability only — the decider enforces the real per-agent chain at
+    decision time (its rungs come from the agent's interval box; absent rungs such
+    as 1440m are pulled live there, which this snapshot cannot see).
     """
-    s60 = _lane_60(channels)
+    by_iv = {}
+    for n, c in channels.items():
+        m = _iv_minutes(c.get("interval"))
+        if m is not None and m > 15 and m not in by_iv:
+            by_iv[m] = (n, c)
+    higher = [by_iv[m] for m in sorted(by_iv)]
     entry_max, exit_min = _strength_bands()
+    reads = []
+    for n, c in higher:
+        iv = str(c.get("interval"))
+        em, xm = entry_max, exit_min
+        try:
+            d = json.loads(DECIDER_CFG.read_text())
+            em = float(d.get(f"entry_strength_max_{iv}", entry_max))
+            xm = float(d.get(f"exit_strength_min_{iv}", exit_min))
+        except Exception:
+            pass
+        try:
+            s = None if c.get("strength") is None else float(c["strength"])
+        except (TypeError, ValueError):
+            s = None
+        if s is None:
+            reads.append({"interval": iv, "strength": None,
+                          "note": f"{iv} absent — decider pulls it live",
+                          "buy_allowed": False, "sell_allowed": False})
+            continue
+        buy_ok = s <= em
+        sell_ok = s >= xm
+        reads.append({"interval": iv, "strength": round(s, 4), "source": n,
+                      "entry_strength_max": em, "exit_strength_min": xm,
+                      "buy_allowed": buy_ok, "sell_allowed": sell_ok,
+                      "note": f"{iv} str {round(s, 3)} via {n} · BUY ≤ {em:g}: "
+                              f"{'ALLOW' if buy_ok else 'BLOCK'} · SELL ≥ {xm:g}: "
+                              f"{'ALLOW' if sell_ok else 'BLOCK'}"})
+    agg_buy = all(r.get("buy_allowed") for r in reads)
+    agg_sell = all(r.get("sell_allowed") for r in reads)
+    key = next((n for n, _c in higher if str(_c.get("interval")) == "60m"), None)
+    s60 = next((r.get("strength") for r in reads if r.get("interval") == "60m"), None)
     for n, c in channels.items():
         m = _iv_minutes(c.get("interval"))
         if m is None or m > 15:
             continue
         raw_e = bool(c.get("entryEligible"))
         raw_x = bool(c.get("exitEligible"))
-        try:
-            s = None if s60.get("strength") is None else float(s60["strength"])
-        except (TypeError, ValueError):
-            s = None
-        if s is None:
+        if reads:
+            c["entryEligible60"] = raw_e and agg_buy
+            c["exitEligible60"] = raw_x and agg_sell
+            c["strengthGate60"] = {
+                "note": ("strength chain — " + " · ".join(r["note"] for r in reads)
+                         + " — absent rungs (e.g. 1440m) are pulled live by the decider"),
+                "s60": s60, "source": key,
+                "buy_allowed": agg_buy, "sell_allowed": agg_sell,
+            }
+            c["strengthGateChain"] = reads
+        else:
             c["entryEligible60"] = raw_e
             c["exitEligible60"] = raw_x
-            c["strengthGate60"] = {"note": "no 60m lane in snapshot — small-tf gate not "
-                                           "applied here (decider pulls 60m live)",
+            c["strengthGate60"] = {"note": "no higher-TF lane in snapshot — chain not "
+                                           "shown here (decider pulls live per the "
+                                           "agent's interval list)",
                                    "s60": None, "source": None,
                                    "buy_allowed": False, "sell_allowed": False}
-            continue
-        buy_ok = s <= entry_max
-        sell_ok = s >= exit_min
-        c["entryEligible60"] = raw_e and buy_ok
-        c["exitEligible60"] = raw_x and sell_ok
-        c["strengthGate60"] = {
-            "note": (f"60m str {round(s, 3)} via {s60.get('label')} · "
-                     f"BUY needs <= {entry_max}: {'ALLOW' if buy_ok else 'BLOCKED'} · "
-                     f"SELL needs >= {exit_min}: {'ALLOW' if sell_ok else 'BLOCKED'}"),
-            "s60": round(s, 4), "source": s60.get("label"),
-            "buy_allowed": buy_ok, "sell_allowed": sell_ok,
-        }
 
 
 def load() -> dict:

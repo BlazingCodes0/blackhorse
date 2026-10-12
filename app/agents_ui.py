@@ -56,6 +56,14 @@ def _slots_to_intervals(slots):
     return out
 
 
+INTV = ["5m", "15m", "60m", "240m", "1440m"]
+_IVMIN = {"5m": 5, "15m": 15, "60m": 60, "240m": 240, "1440m": 1440}
+
+
+def _ivmin(iv):
+    return _IVMIN.get(str(iv), 10 ** 9)
+
+
 # ------------------------------------------------------------------ data
 def _jload(p, d):
     try:
@@ -171,7 +179,11 @@ SETTINGS = [
     ("Where it trades", [
         ("pairs", "Pairs", "list", "agent", "Comma list, e.g. DOT/USD,ETH/USD. Empty = every pair."),
         ("strategy", "Strategy", "combo:swing,daytrade,custom", "policy", "Interval combo (editable). swing/daytrade are examples."),
-        ("intervals", "Intervals", "list", "policy", "Raw intervals e.g. 15m,60m,240m or 5m,15m,60m"),
+        ("intervals", "Intervals", "list", "policy", "SMALLEST = the entry (trading) lane. "
+         "Every OTHER interval listed becomes a strength-chain rung (60m -> 240m -> 1440m) "
+         "that must clear its own band before this agent may buy/sell. Listing an interval "
+         "turns its rung ON; removing it turns it OFF. e.g. 15m,60m,240m — or just 15m for "
+         "the default 60m gate."),
         ("capital", "Capital $", "float", "agent", "Budget this agent may size from (bounded by real free cash)."),
     ]),
     ("Entry (buy)", [
@@ -201,7 +213,7 @@ class AgentsMixin:
         v.setSpacing(8)
 
         head = QLabel("<b style='font-size:15px'>Agents</b> &nbsp;<span style='color:#9ca3af'>"
-                      "the bodies — BlackHorse (brain) owns them; each trades by its own profile.</span>")
+                      "the bodies — BlackHorse (brain) owns them; intervals are the profiles.</span>")
         v.addWidget(head)
         self.agent_status = QLabel("")
         self.agent_status.setStyleSheet("color:#9ca3af")
@@ -215,12 +227,12 @@ class AgentsMixin:
         self.agent_kind = QComboBox()
         self.agent_kind.addItems(["trading", "youtube"])
         cr.addWidget(self.agent_kind)
-        cr.addWidget(QLabel("profile"))
+        cr.addWidget(QLabel("interval"))
         self.agent_profile = QComboBox()
         self.agent_profile.setMinimumWidth(260)
         try:
             agents, _ = self._agents_mod()
-            for k, p in agents.profiles().items():
+            for k, p in agents.interval_defaults().items():
                 self.agent_profile.addItem(f"{k} — {p['label']}", k)
         except Exception:
             pass
@@ -239,6 +251,15 @@ class AgentsMixin:
         self.agent_profile_desc.setStyleSheet("color:#9ca3af;font-size:11px")
         v.addWidget(self.agent_profile_desc)
         self.agent_profile.currentIndexChanged.connect(self._show_profile)
+        self._show_profile()
+
+        itip = QLabel("<span style='color:#9ca3af'>A new agent is seeded with that interval's "
+                      "default band (buy ≤ / sell ≥ / R:R / stop / risk). The climb it starts "
+                      "with is that interval's default climb — turn climb rungs on or off for "
+                      "any agent in its settings.</span>")
+        itip.setWordWrap(True)
+        itip.setStyleSheet("color:#9ca3af;font-size:11px")
+        v.addWidget(itip)
 
         # main split: list | detail
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -350,7 +371,7 @@ class AgentsMixin:
                 on = a.get("enabled")
                 pairs = ",".join(a.get("pairs") or []) or "all pairs"
                 it = QListWidgetItem(f"{'● ' if on else '○ '}{a['name']}  ({a['id']})\n"
-                                     f"   {a.get('profile') or '-'} · ${a['capital']} · {a.get('mode') or '-'}\n"
+                                     f"   {a.get('profile_label') or a.get('entry_interval') or '-'} · ${a['capital']} · {a.get('mode') or '-'}\n"
                                      f"   {pairs.replace(',', ', ')}")
                 it.setForeground(QBrush(QColor(GREEN if on else GREY)))
                 self.agent_list.addItem(it)
@@ -409,21 +430,23 @@ class AgentsMixin:
         agents, _ = self._agents_mod()
         try:
             pol = agents.policy_for(a["id"])
-            prof = agents.profiles().get(a.get("profile"), {})
         except Exception as e:
             self.ag_overview.setHtml(f"<pre>error: {e}</pre>")
             return
-        self._render_overview(a, pol, prof)
+        self._render_overview(a, pol)
         self._render_settings(a, pol)
         self._refresh_orders_tab()
 
-    def _render_overview(self, a, pol, prof):
+    def _render_overview(self, a, pol):
         on = a.get("enabled")
         d = load_agent_orders(a["id"])["last_decision"]
         last = (f"<b>{d['action']}</b> — {d.get('reason') or ''} <span style='color:{GREY}'>({_ago(d['ts'])})</span>"
                 if d else f"<span style='color:{GREY}'>no decision recorded yet</span>")
+        ivs = pol.get("strategy_intervals") or []
+        entry = ivs[0] if ivs else pol.get("channels", [""])[0]
+        climb = ", ".join(ivs[1:]) if len(ivs) > 1 else "off — trades on its own strength"
         rows = [("Status", f"<b style='color:{GREEN if on else GREY}'>{'ENABLED' if on else 'disabled'}</b>"),
-                ("Profile", f"{a.get('profile')} — {prof.get('label', '')}"),
+                ("Entry interval", f"<b>{entry}</b> · climb: {climb}"),
                 ("Mode", f"<b>{a.get('mode') or '-'}</b>"),
                 ("Capital (total budget)", f"${a.get('capital')}" + self._budget_html(a["id"])),
                 ("Pairs", ", ".join(a.get("pairs") or []) or "all pairs"),
@@ -440,7 +463,8 @@ class AgentsMixin:
                 ("Last decision", last)]
         body = "".join(f"<tr><td style='padding:3px 14px 3px 0;color:{GREY};white-space:nowrap'>{k}</td>"
                        f"<td style='padding:3px 0'>{v}</td></tr>" for k, v in rows)
-        desc = prof.get("description", "")
+        desc = ("intervals are the profiles — the entry lane trades, the climb rungs each confirm first."
+                if a.get("kind") == "trading" else "")
         self.ag_overview.setHtml(
             f"<h2 style='margin-bottom:2px'>{a.get('name')} <span style='color:{GREY};font-size:13px'>"
             f"{a['id']}</span></h2><p style='color:{GREY}'>{desc}</p><table>{body}</table>"
@@ -461,194 +485,12 @@ class AgentsMixin:
         return out
 
     # ---------------------------------------------------------------- profile
-    def _profiles_for_intervals(self, intervals):
-        iv = [str(x).strip() for x in (intervals or [])]
-        has5 = any(x == '5m' for x in iv)
-        if has5:
-            return ['quick','scalp15']
-        return ['slow','lifecycle']
-
-    def _build_profile_group(self, a, intervals=None):
-        """Profile = risk posture. Filtered by intervals to match strategy."""
-        g = QGroupBox("Profile — personality / risk posture (driven by interval set)")
-        grid = QGridLayout(g)
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(6)
-        agents, _ = self._agents_mod()
-        cur = a.get("profile")
-        kind = a.get("kind")
-
-        lab = QLabel("profile")
-        lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._ag_profile_combo = QComboBox()
-        self._ag_profile_combo.setMinimumWidth(280)
-        allowed = self._profiles_for_intervals(intervals)
-        try:
-            profs = agents.profiles()
-            # add allowed first
-            for k in allowed:
-                if k in profs:
-                    p = profs[k]
-                    self._ag_profile_combo.addItem(f"{k} — {p['label']}", k)
-            if self._ag_profile_combo.count() == 0:
-                for k, p in profs.items():
-                    self._ag_profile_combo.addItem(f"{k} — {p['label']}", k)
-                    allowed.append(k)
-        except Exception:
-            pass
-        # adjust cur to allowed
-        if cur not in allowed:
-            cur = allowed[0] if allowed else cur
-        # set current
-        for j in range(self._ag_profile_combo.count()):
-            if self._ag_profile_combo.itemData(j) == cur:
-                self._ag_profile_combo.setCurrentIndex(j); break
-        grid.addWidget(lab, 0, 0)
-        grid.addWidget(self._ag_profile_combo, 0, 1)
-
-        self._ag_profile_reset = QCheckBox("Reset tuned values to this profile's defaults")
-        self._ag_profile_reset.setToolTip("Wipes this agent's policy overrides so the new profile's "
-                                          "own numbers take effect. Untick to keep your tuning.")
-        grid.addWidget(self._ag_profile_reset, 0, 2)
-
-        b_go = QPushButton("Switch profile")
-        b_go.setStyleSheet("background:#1d4ed8;color:white;font-weight:bold;padding:4px 14px")
-        b_go.clicked.connect(lambda _c=False, aid=a["id"]: self._apply_profile(aid))
-        grid.addWidget(b_go, 0, 3)
-
-        self._ag_profile_desc = QLabel("")
-        self._ag_profile_desc.setWordWrap(True)
-        self._ag_profile_desc.setStyleSheet(f"color:{GREY};font-size:11px")
-        grid.addWidget(self._ag_profile_desc, 1, 0, 1, 4)
-
-        self._ag_profile_shadow = QLabel("")
-        self._ag_profile_shadow.setWordWrap(True)
-        self._ag_profile_shadow.setStyleSheet(f"color:{AMBER};font-size:11px")
-        grid.addWidget(self._ag_profile_shadow, 2, 0, 1, 4)
-
-        self._ag_profile_msg = QLabel("")
-        self._ag_profile_msg.setWordWrap(True)
-        grid.addWidget(self._ag_profile_msg, 3, 0, 1, 4)
-
-        grid.setColumnStretch(1, 1)
-        if kind != "trading":
-            for w in (self._ag_profile_combo, self._ag_profile_reset, b_go):
-                w.setEnabled(False)
-            self._ag_profile_desc.setText(f"kind '{kind}' — only trading agents have a profile.")
-        else:
-            self._ag_profile_combo.currentIndexChanged.connect(lambda _i=False, aid=a["id"]:
-                                                              self._profile_preview(aid))
-            self._profile_preview(a["id"])
-        return g
-
-    def _profile_preview(self, aid):
-        """Show the selected profile's description + which tuned values would still
-        shadow it (so a switch never silently keeps the old personality)."""
-        try:
-            agents, _ = self._agents_mod()
-            key = self._ag_profile_combo.currentData()
-            p = agents.profiles().get(key, {})
-            self._ag_profile_desc.setText(f"<b>{key}</b> — {p.get('description', '')}")
-            sh = agents.shadowed_keys(aid, key)
-            if sh:
-                rows = " · ".join(f"{k}: mine {v} ≠ profile {pv}" for k, v, pv in sh)
-                self._ag_profile_shadow.setText(
-                    f"⚠ kept overrides that would shadow this profile — {rows}. "
-                    f"Tick the reset box to take the profile's own numbers.")
-            else:
-                self._ag_profile_shadow.setText("")
-        except Exception as e:
-            self._ag_profile_shadow.setText(f"profile preview error: {e}")
-
-    def _apply_profile(self, aid):
-        try:
-            agents, _ = self._agents_mod()
-            key = self._ag_profile_combo.currentData()
-            reset = self._ag_profile_reset.isChecked()
-            old = agents.get_agent(aid).get("profile")
-            if key == old and not reset:
-                self._ag_profile_msg.setText(f"<span style='color:{GREY}'>already on '{key}'</span>")
-                return
-            agents.set_profile(aid, key, reset_overrides=reset)
-            note = " (overrides reset to profile defaults)" if reset else ""
-            self.refresh_agents()
-            self._ag_profile_msg.setText(
-                f"<span style='color:{GREEN}'>{aid}: {old or '-'} → {key}{note} · applies next cycle</span>")
-        except Exception as e:
-            self._ag_profile_msg.setText(f"<span style='color:{RED}'>error — {e}</span>")
-
     def _render_settings(self, a, pol):
         page = QWidget()
         pv = QVBoxLayout(page)
         self._agent_fields = {}
-        # Strategy/Intervals block first
-        strat_box = QGroupBox("Strategy — interval combination (editable, per agent)")
-        sg = QGridLayout(strat_box)
-        sg.setHorizontalSpacing(14); sg.setVerticalSpacing(8)
-        pol_cur = pol
-        ch = pol_cur.get('channels') or []
-        iv = pol_cur.get('strategy_intervals') or _slots_to_intervals(ch)
-        strat_cur = pol_cur.get('strategy')
-        if strat_cur not in ('swing','daytrade','custom'):
-            if set(iv) == {'15m','60m','240m'} and len(iv)==3:
-                strat_cur = 'swing'
-            elif '5m' in iv:
-                strat_cur = 'daytrade'
-            else:
-                strat_cur = 'custom' if iv else 'swing'
-        sl = QLabel('Strategy'); sl.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
-        sw = QComboBox(); sw.addItems(['swing','daytrade','custom']); sw.setCurrentText(strat_cur or 'swing')
-        sg.addWidget(sl,0,0); sg.addWidget(sw,0,1)
-        self._agent_fields['strategy'] = (sw,'combo:swing,daytrade,custom','policy', strat_cur)
-        il = QLabel('Intervals'); il.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
-        il.setToolTip('Raw intervals e.g. 15m,60m,240m or 5m,15m,60m')
-        iw = QLineEdit(','.join(iv) if iv else '15m,60m,240m')
-        iw.setToolTip('Raw intervals e.g. 15m,60m,240m or 5m,15m,60m')
-        sg.addWidget(il,0,3); sg.addWidget(iw,0,4)
-        self._agent_fields['intervals'] = (iw,'list','policy', iv)
-        sg.setColumnMinimumWidth(2,24); sg.setColumnStretch(1,1); sg.setColumnStretch(4,1)
-        pv.addWidget(strat_box)
-        # Profile block under strategy (driven by intervals)
-        prof_w = self._build_profile_group(a, iv)
-        pv.addWidget(prof_w)
-        # reactive wiring
-        def _update_intervals_from_strat():
-            s = sw.currentText().strip().lower()
-            if s == 'swing':
-                iw.setText('15m,60m,240m')
-            elif s == 'daytrade':
-                iw.setText('5m,15m,60m')
-            # custom: do not overwrite
-            _refresh_profile_from_intervals()
-        def _refresh_profile_from_intervals():
-            # rebuild profile combo for current intervals
-            try:
-                iv_cur = [x.strip() for x in iw.text().split(',') if x.strip()]
-                if hasattr(self, '_ag_profile_combo'):
-                    self._ag_profile_combo.clear()
-                    allowed = self._profiles_for_intervals(iv_cur)
-                    agents, _ = self._agents_mod()
-                    profs = agents.profiles()
-                    for k in allowed:
-                        if k in profs:
-                            p = profs[k]; self._ag_profile_combo.addItem(f"{k} — {p['label']}", k)
-                    if self._ag_profile_combo.count()==0:
-                        for k,p in profs.items():
-                            self._ag_profile_combo.addItem(f"{k} — {p['label']}", k)
-                    # pick first if current not allowed
-                    curp = a.get('profile')
-                    if curp not in allowed and self._ag_profile_combo.count()>0:
-                        self._ag_profile_combo.setCurrentIndex(0)
-                    else:
-                        for j in range(self._ag_profile_combo.count()):
-                            if self._ag_profile_combo.itemData(j)==curp:
-                                self._ag_profile_combo.setCurrentIndex(j); break
-                    if a.get('kind')=='trading':
-                        self._profile_preview(a['id'])
-            except Exception:
-                pass
-        sw.currentIndexChanged.connect(_update_intervals_from_strat)
-        iw.editingFinished.connect(_refresh_profile_from_intervals)
+        # Entry lane & strength climb — the interval buttons ARE the profiles.
+        pv.addWidget(self._build_interval_block(a, pol))
         for title, fields in SETTINGS:
             # skip Where it trades block (already handled)
             if title == 'Where it trades':
@@ -658,10 +500,10 @@ class AgentsMixin:
             grid.setHorizontalSpacing(14)
             grid.setVerticalSpacing(8)
             for i, (key, label, kind, where, tip) in enumerate(fields):
-                if key == 'strategy' or key == 'intervals' or key == 'channels':
-                    continue  # handled above
+                if key in ('strategy', 'intervals', 'channels'):
+                    continue  # intervals are handled by the entry/climb block
                 r, c = divmod(i, 2)
-                cur = a.get(key) if where == 'agent' else pol_cur.get(key)
+                cur = a.get(key) if where == 'agent' else pol.get(key)
                 lab = QLabel(label)
                 lab.setToolTip(tip)
                 lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -702,25 +544,167 @@ class AgentsMixin:
         pv.addStretch(1)
         self.ag_settings_scroll.setWidget(page)
 
+    # ---------------------------------------------------------------- interval grid
+    def _build_interval_block(self, a, pol):
+        self._interval_pol = pol
+        g = QGroupBox("Entry lane & strength climb — intervals are the profiles")
+        box = QVBoxLayout(g)
+        iv = [x for x in (pol.get('strategy_intervals') or _slots_to_intervals(pol.get('channels') or []))
+              if x in INTV]
+        if not iv:
+            iv = ['15m', '60m', '240m']
+        self._interval_entry = iv[0]
+        self._interval_on = [x for x in iv if x != self._interval_entry]
+        row = QHBoxLayout()
+        self._interval_buttons = {}
+        for x in INTV:
+            b = QPushButton(x)
+            b.setCheckable(True)
+            b.setMinimumWidth(72)
+            b.clicked.connect(lambda _c=False, iv=x: self._interval_clicked(iv))
+            self._interval_buttons[x] = b
+            row.addWidget(b)
+        box.addLayout(row)
+        self._interval_status = QLabel("")
+        self._interval_status.setWordWrap(True)
+        self._interval_status.setStyleSheet(f"color:{GREY};font-size:11px")
+        box.addWidget(self._interval_status)
+        self._rungs_holder = QWidget()
+        self._rungs_box = QVBoxLayout(self._rungs_holder)
+        self._rungs_box.setContentsMargins(0, 0, 0, 0)
+        box.addWidget(self._rungs_holder)
+        self._restyle_interval_buttons(apply_defaults=False)
+        return g
+
+    def _restyle_interval_buttons(self, apply_defaults=False):
+        entry = self._interval_entry
+        emin = _ivmin(entry)
+        for x in INTV:
+            b = self._interval_buttons[x]
+            b.blockSignals(True)
+            if x == entry:
+                b.setText(f"▶ {x} ◀")
+                b.setChecked(True)
+                b.setEnabled(True)
+                b.setStyleSheet("background:#1d4ed8;color:white;font-weight:bold")
+            elif _ivmin(x) < emin:
+                b.setText(x)
+                b.setChecked(False)
+                b.setEnabled(False)
+                b.setStyleSheet("color:#6b7280;background:#111827")
+            elif x in self._interval_on:
+                b.setText(f"✔ {x}")
+                b.setChecked(True)
+                b.setEnabled(True)
+                b.setStyleSheet("background:#065f46;color:white")
+            else:
+                b.setText(f"＋ {x}")
+                b.setChecked(False)
+                b.setEnabled(True)
+                b.setStyleSheet("")
+            b.blockSignals(False)
+        self._rebuild_rung_rows()
+        if apply_defaults:
+            self._apply_interval_defaults(entry)
+
+    def _interval_clicked(self, x):
+        agents, _ = self._agents_mod()
+        def defaults_for(k):
+            return [y for y in (agents.interval_defaults().get(k, {}).get('climb') or [])
+                    if _ivmin(y) > _ivmin(k)]
+        if x == self._interval_entry:
+            nxt = [y for y in INTV if _ivmin(y) > _ivmin(x) and y in self._interval_on]
+            if nxt:
+                self._interval_entry = nxt[0]
+                self._interval_on = [y for y in self._interval_on if y != self._interval_entry]
+            else:
+                return  # keep a lone entry; nothing to release onto
+        elif _ivmin(x) < _ivmin(self._interval_entry):
+            self._interval_entry = x
+            self._interval_on = list(self._interval_defaults_climb(x))
+        else:
+            if x in self._interval_on:
+                self._interval_on.remove(x)
+            else:
+                self._interval_on.append(x)
+            self._restyle_interval_buttons(apply_defaults=False)
+            return
+        self._restyle_interval_buttons(apply_defaults=True)
+
+    def _interval_defaults_climb(self, iv):
+        try:
+            agents, _ = self._agents_mod()
+            climb = agents.interval_defaults().get(iv, {}).get('climb') or []
+            return [y for y in climb if _ivmin(y) > _ivmin(iv)]
+        except Exception:
+            return []
+
+    def _rebuild_rung_rows(self):
+        while self._rungs_box.count():
+            it = self._rungs_box.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        active = sorted([x for x in self._interval_on if _ivmin(x) > _ivmin(self._interval_entry)],
+                        key=_ivmin)
+        entry = self._interval_entry
+        if active:
+            names = ", ".join(active)
+            self._interval_status.setText(
+                f"<b>{entry}</b> is the entry lane (the one this agent trades). Climb ON: <b>{names}</b> — "
+                f"before {entry} may buy or sell, each rung must sit in its own band (buy ≤ / sell ≥). "
+                f"Click a larger interval to add or remove it from the climb.")
+        else:
+            self._interval_status.setText(
+                f"<b>{entry}</b> is the entry lane and the climb is <b>off</b> — it trades on its own "
+                f"strength alone. Click a larger interval above to add a climb rung.")
+        for x in active:
+            rr = QWidget()
+            hb = QHBoxLayout(rr)
+            hb.setContentsMargins(0, 0, 0, 0)
+            old_b = self._interval_pol.get('entry_strength_max_' + x)
+            old_s = self._interval_pol.get('exit_strength_min_' + x)
+            lab = QLabel(f"{x} rung")
+            lab.setMinimumWidth(70)
+            wb = QLineEdit('' if old_b is None else str(old_b))
+            ws = QLineEdit('' if old_s is None else str(old_s))
+            wb.setMinimumWidth(80)
+            ws.setMinimumWidth(80)
+            hb.addWidget(lab)
+            hb.addWidget(QLabel("buy ≤"))
+            hb.addWidget(wb)
+            hb.addWidget(QLabel("sell ≥"))
+            hb.addWidget(ws)
+            hb.addStretch(1)
+            self._agent_fields['entry_strength_max_' + x] = (wb, 'float', 'policy', old_b)
+            self._agent_fields['exit_strength_min_' + x] = (ws, 'float', 'policy', old_s)
+            self._rungs_box.addWidget(rr)
+
+    def _apply_interval_defaults(self, iv):
+        try:
+            agents, _ = self._agents_mod()
+            cfg = agents.interval_defaults().get(iv, {}).get('cfg') or {}
+        except Exception:
+            cfg = {}
+        for k, v in cfg.items():
+            w = self._agent_fields.get(k)
+            if w and isinstance(w[0], QLineEdit):
+                w[0].setText(str(v))
+
+    def _entry_climb_state(self):
+        entry = getattr(self, '_interval_entry', None)
+        on = list(getattr(self, '_interval_on', []))
+        if entry not in INTV:
+            return ['15m', '60m', '240m']
+        hist = [x for x in INTV if _ivmin(x) > _ivmin(entry) and x in on]
+        return [entry] + sorted(hist, key=_ivmin)
+
     def _save_agent_settings(self, aid):
         agents, _ = self._agents_mod()
         changed, errs = [], []
-        # read strategy and intervals
+        # intervals come from the entry button + climbed rung toggles
+        iv_list = self._entry_climb_state()
         strat = 'custom'
-        iv_list = []
-        if 'strategy' in self._agent_fields:
-            try:
-                sw, sk, swher, sold = self._agent_fields['strategy']
-                strat = (sw.currentText() if hasattr(sw,'currentText') else str(sold)).strip().lower()
-            except Exception:
-                strat = 'custom'
-        if 'intervals' in self._agent_fields:
-            try:
-                iw, ik, iwhere, iold = self._agent_fields['intervals']
-                raw = (iw.text() if hasattr(iw,'text') else str(iold)).strip()
-                iv_list = [x.strip() for x in raw.split(',') if x.strip()]
-            except Exception:
-                iv_list = []
         # if empty, derive from strategy
         if not iv_list:
             if strat == 'swing':

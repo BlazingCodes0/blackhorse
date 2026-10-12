@@ -1129,8 +1129,12 @@ class BlackHorse(AgentsMixin, QMainWindow):
         try:
             agents, _ = self._agents_mod()
             key = self.agent_profile.currentData()
-            p = agents.profiles().get(key, {})
-            self.agent_profile_desc.setText(p.get("description", ""))
+            p = agents.interval_defaults().get(key, {})
+            desc = p.get("description", "")
+            climb = ", ".join(p.get("climb") or []) or "none"
+            if desc:
+                desc += f"<br>Default climb: <b>{climb}</b> — each listed rung must clear its own band before this lane moves."
+            self.agent_profile_desc.setText(desc)
         except Exception:
             pass
 
