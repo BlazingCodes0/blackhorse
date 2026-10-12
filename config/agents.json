@@ -4,7 +4,6 @@
       "id": "agent_1",
       "name": "Lifecycle",
       "kind": "trading",
-      "profile": "lifecycle",
       "enabled": true,
       "capital": 35.0,
       "policy_overrides": {
@@ -33,7 +32,6 @@
       "id": "agent_2",
       "name": "LiveTest30",
       "kind": "trading",
-      "profile": "quick",
       "enabled": false,
       "capital": 0.0,
       "policy_overrides": {
@@ -56,7 +54,6 @@
       "id": "agent_4",
       "name": "Scalper",
       "kind": "trading",
-      "profile": "quick",
       "enabled": false,
       "capital": 0.0,
       "policy_overrides": {
@@ -81,7 +78,6 @@
       "id": "agent_5",
       "name": "Scalper15",
       "kind": "trading",
-      "profile": "scalp15",
       "enabled": false,
       "capital": 0.0,
       "mode": "LIVE",
@@ -97,24 +93,24 @@
       "id": "agent_6",
       "name": "Slow 6",
       "kind": "trading",
-      "profile": "slow",
       "enabled": true,
       "capital": 20.0,
       "mode": "LIVE",
       "policy_overrides": {
         "min_reward_risk": 2.0,
         "channels": [
-          "ripple",
           "wave",
           "tide"
         ],
         "entry_order_type": "limit",
-        "strategy": "swing",
+        "strategy": "custom",
         "strategy_intervals": [
-          "15m",
           "60m",
-          "240m"
+          "240m",
+          "1440m"
         ],
+        "entry_strength_max": 0.15,
+        "exit_strength_min": 0.8,
         "max_position_pct": 50.0
       },
       "created": "2026-10-07T11:48:07Z",

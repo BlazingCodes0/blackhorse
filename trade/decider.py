@@ -35,8 +35,7 @@ def _cfg() -> dict:
     defaults = {"risk_per_trade_pct": 1.0, "max_position_pct": 10.0,
                 "entry_strength_max": 0.25, "exit_strength_min": 0.75,
                 "min_reward_risk": 1.5, "stop_max_pct": 3.0,
-                "fee_pct_per_side": 0.80, "require_tide_context": True,
-                "small_tf_strength_from_60m": True}
+                "fee_pct_per_side": 0.80, "require_tide_context": True}
     try:
         return {**defaults, **json.loads(CFG.read_text())}
     except (json.JSONDecodeError, OSError):
@@ -106,36 +105,64 @@ def _iv_minutes(iv):
         return None
 
 
-def _is_small_tf(iv, max_min=15):
-    """True for the small lanes (15m or shorter) that must borrow 60m strength."""
-    m = _iv_minutes(iv)
-    return m is not None and m <= max_min
+def _slots_intervals(slots) -> list:
+    """Channel slots -> interval labels (mirror of the GUI's mapping)."""
+    m = {"ripple": "15m", "wave": "60m", "tide": "240m",
+         "ripple5": "5m", "wave15": "15m", "tide60": "60m"}
+    seen, out = set(), []
+    for s in (slots or []):
+        v = m.get(str(s), str(s))
+        if v not in seen:
+            seen.add(v); out.append(v)
+    return out
 
 
-def _shared_60m(channels: dict) -> dict:
-    """Range strength is trusted from the 60m lane (owner rule). Mirror of
-    _shared_15m: the 15m (and smaller) lanes' own strength is sloppy/noisy, so
-    whichever small lane we trade, the 60m lane supplies the strength band it
-    must obey. The 60m lane may be labeled any channel whose interval == '60m'."""
-    if not channels:
-        return {}
-    for name, c in channels.items():
-        if str(c.get("interval")) == "60m":
-            return {"label": name, "interval": "60m",
-                    "strength": c.get("strength"),
-                    "direction": c.get("strengthDirection")}
-    return {}
+def _chain_from(cfg: dict, channels: dict) -> dict:
+    """The agent's intervals, turned into (entry lane, climb rungs).
+
+    Smallest listed interval = the ENTRY (trading) lane. Every OTHER listed
+    interval is a climb rung that must clear its own band before the entry lane
+    may move. There is NO hidden default rung: if you list only your entry
+    interval, the lane trades on its own strength alone (climb off)."""
+    ivs = cfg.get("strategy_intervals")
+    if not isinstance(ivs, list) or not ivs:
+        ivs = _slots_intervals(cfg.get("channels"))
+    if not ivs:                                  # nothing configured at all (e.g. bare
+        ivs = ["15m", "60m", "240m"]             # --explain): the classic owner trio
+    ivs = [str(x) for x in ivs]
+
+    def _key(x):
+        m = _iv_minutes(x)
+        return (m if m is not None else 9e9, x)
+
+    ordered = sorted(set(ivs), key=_key)
+    entry = ordered[0]
+    rungs = [x for x in ordered if x != entry]
+    return {"entry": entry, "rungs": rungs, "intervals": ordered}
 
 
-def _pull_strength_60m(pair="DOT/USD", lookback=20):
-    """Compute the 60m range strength live from Kraken public OHLC when no 60m
-    lane is in the snapshot. Same formula as validate.py's _strength:
-    (close - low) / (high - low) over the last `lookback` CLOSED 60m bars.
+def _entry_lane(channels: dict, cfg: dict, entry_iv: str):
+    """The channel carrying the entry interval — the agent's own channels first."""
+    prefer = cfg.get("channels")
+    if isinstance(prefer, list) and prefer:
+        for n in prefer:
+            c = channels.get(n)
+            if c and str(c.get("interval")) == entry_iv:
+                return n, c
+    for n, c in channels.items():
+        if str(c.get("interval")) == entry_iv:
+            return n, c
+    return None, None
+
+
+def _pull_strength(interval_min: int, pair="DOT/USD", lookback=20):
+    """(close-low)/(high-low) over the last `lookback` CLOSED candles at any
+    interval, from Kraken public OHLC. Same formula as validate.py's _strength.
     Returns None on any failure (never blocks, just informs)."""
     import urllib.request, urllib.parse
     try:
         sym = str(pair or "DOT/USD").replace("/", "").upper()
-        q = urllib.parse.urlencode({"pair": sym, "interval": 60})
+        q = urllib.parse.urlencode({"pair": sym, "interval": int(interval_min)})
         d = json.loads(urllib.request.urlopen(
             f"https://api.kraken.com/0/public/OHLC?{q}", timeout=10).read())
         res = d.get("result", {}) or {}
@@ -153,16 +180,31 @@ def _pull_strength_60m(pair="DOT/USD", lookback=20):
         return None
 
 
-def _strength_60m_read(shared60: dict, pair) -> tuple:
-    """Prefer the snapshot's 60m lane; when that lane is absent (or its strength
-    is missing) PULL the 60m interval and compute its strength. -> (value, source)."""
-    v = _strength((shared60 or {}).get("strength"))
-    if v is not None:
-        return v, f"from 60m lane '{shared60.get('label')}'"
-    v = _pull_strength_60m(pair)
-    if v is not None:
-        return v, "pulled live from 60m candles"
+def _rung_read(channels: dict, cfg: dict, pair, rung_iv: str):
+    """A rung's range strength: the snapshot's own lane when it exists, else pulled
+    LIVE from Kraken candles at that interval. -> (value, source)."""
+    for n, c in channels.items():
+        if str(c.get("interval")) == rung_iv:
+            v = _strength(c.get("strength"))
+            if v is not None:
+                return v, f"from {rung_iv} lane '{n}'"
+    m = _iv_minutes(rung_iv)
+    if m is not None:
+        v = _pull_strength(m, pair)
+        if v is not None:
+            return v, f"pulled live from {rung_iv} candles"
     return None, "unavailable"
+
+
+def _rung_bands(cfg: dict, rung_iv: str):
+    """Per-rung buy/sell bands from the GUI keys (…_60m / …_240m / …_1440m),
+    else the agent's global entry_strength_max / exit_strength_min."""
+    em = cfg.get(f"entry_strength_max_{rung_iv}", cfg.get("entry_strength_max", 0.25))
+    xm = cfg.get(f"exit_strength_min_{rung_iv}", cfg.get("exit_strength_min", 0.75))
+    try:
+        return float(em), float(xm)
+    except (TypeError, ValueError):
+        return float(cfg.get("entry_strength_max", 0.25)), float(cfg.get("exit_strength_min", 0.75))
 
 
 def _last_verdict():
@@ -236,64 +278,97 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
         reasons.append("brain risk EXTREME")
         return _hold("brain extreme risk", reasons)
 
-    # --- candidates from channels (restricted to the agent's channels if set) ---
-    allowed = cfg.get("channels")
+    # --- the strength climb (owner rule): listed intervals are the ladder -------------
+    # The SMALLEST listed interval is the ENTRY LANE — the interval this agent
+    # actually trades. Every OTHER interval listed above it is a climb rung: each
+    # rung's range strength must sit inside ITS OWN band before the entry lane may
+    # buy (rung ≤ its entry_max) or sell (rung ≥ its exit_min). A listed rung with
+    # no lane in the snapshot is PULLED live from Kraken OHLC. Nothing is hard-coded
+    # and there is no back-room default: only what the user lists (in the GUI) is
+    # in the climb; a single listed interval trades flat on its own strength. The
+    # old pick-the-best-interval dance is gone — we decide on the entry lane only.
+    chain = _chain_from(cfg, ch)
+    entry_iv = chain["entry"]
+    rungs = chain["rungs"]
+    chain_used = bool(rungs)
+    entry_name, entry_ch = _entry_lane(ch, cfg, entry_iv)
+    if not entry_ch:
+        return _hold(f"no {entry_iv} lane for the entry interval in the snapshot "
+                     f"(listed intervals: {', '.join(chain['intervals'])})", reasons)
+    s = _strength(entry_ch.get("strength"))
+    direction = entry_ch.get("strengthDirection")
+    gauge = s                                   # strength reported to the plan
+    chain_reads = []
+    if chain_used:
+        for r in rungs:
+            g, src = _rung_read(ch, cfg, pair or signal.get("pair"), r)
+            em, xm = _rung_bands(cfg, r)
+            if g is None:
+                chain_reads.append({"interval": r, "strength": None, "source": src,
+                                    "entry_strength_max": em, "exit_strength_min": xm,
+                                    "buy_allowed": False, "sell_allowed": False,
+                                    "note": f"{r} strength unavailable ({src})"})
+                reasons.append(f"strength chain: {r} unavailable ({src})")
+                continue
+            buy_ok = g <= em
+            sell_ok = g >= xm
+            note = (f"{r} str {round(g, 3)} ({src}) · BUY ≤ {em:g}: "
+                    f"{'ALLOW' if buy_ok else 'BLOCK'} · SELL ≥ {xm:g}: "
+                    f"{'ALLOW' if sell_ok else 'BLOCK'}")
+            reasons.append(f"strength chain: {note}")
+            chain_reads.append({"interval": r, "strength": round(g, 4), "source": src,
+                                "entry_strength_max": em, "exit_strength_min": xm,
+                                "buy_allowed": buy_ok, "sell_allowed": sell_ok, "note": note})
+        if chain_reads:
+            gauge = chain_reads[-1]["strength"]     # the acting (highest) gauge
+            reasons.append(f"strength chain: acting gauge = {chain_reads[-1]['interval']} "
+                           f"str {chain_reads[-1]['strength']} "
+                           f"(entry lane {entry_name}/{entry_iv})")
+        chain_buy = all(r.get("buy_allowed") for r in chain_reads)
+        chain_sell = all(r.get("sell_allowed") for r in chain_reads)
+    else:
+        chain_buy = chain_sell = None
     # SPREAD TRUTH (owner rule): trust ONLY the 15m spread read. Other timeframes
     # are noise or too slow. Find the 15m lane regardless of which channel we trade.
     shared15 = _shared_15m(ch)
-    # RANGE-STRENGTH TRUTH (owner rule): the 15m (and smaller) lanes' own range
-    # strength is sloppy/noisy, so any agent on a small timeframe reads its
-    # strength band from the 60m lane instead — exactly as the higher lanes read
-    # spread/cross from 15m. Mirror of _shared_15m above.
-    shared60 = _shared_60m(ch)
-    small_from_60m = cfg.get("small_tf_strength_from_60m", True)
     cfg_buy = dict(cfg, require_proven_edge=False) if buy_override else cfg
+    adv = entry_ch.get("advisor") or {}
+    buy, sell = _num(adv.get("buy")), _num(adv.get("sell"))
     plans = []
-    for name, c in (("ripple", ripple), ("wave", wave), ("tide", tide)):
-        if allowed and name not in allowed:
-            continue
-        s = _strength(c.get("strength"))
-        direction = c.get("strengthDirection")
-        g60_note = None
-        if small_from_60m and _is_small_tf(c.get("interval")):
-            g, src = _strength_60m_read(shared60, pair or signal.get("pair"))
-            if g is None:
-                reasons.append(f"{name}: {c.get('interval')} lane skipped — no 60m range "
-                               f"strength (60m lane absent and 60m pull failed)")
-                continue
-            g60_note = (f"range strength is 60m ({src}): {round(g, 3)} — "
-                        f"15m-or-smaller lane does not trust its own sloppy strength")
-            reasons.append(f"{name}: {c.get('interval')} lane uses 60m range strength "
-                           f"{round(g, 3)} ({src})")
-            s = g
-        if s is None:
-            continue
-        adv = c.get("advisor") or {}
-        buy, sell = _num(adv.get("buy")), _num(adv.get("sell"))
-        # BUY
-        if s <= cfg["entry_strength_max"] and not _missing(adv.get("buy")):
-            p = _build(name, c, "BUY", buy, s, direction, available, cfg_buy, reasons, _edge, pair, shared15)
-            if p and g60_note:
-                p["evidence"].append(g60_note); p["explain"].append(g60_note)
+    # BUY
+    if chain_used:
+        buy_ok_total = bool(chain_buy) and not _missing(buy)
+    else:
+        buy_ok_total = (s is not None and s <= cfg["entry_strength_max"] and not _missing(buy))
+    if buy_ok_total:
+        p = _build(entry_name, entry_ch, "BUY", buy, gauge, direction, available,
+                   cfg_buy, reasons, _edge, pair, shared15)
+        for r in chain_reads:
+            if p and chain_used:
+                p["evidence"].append(f"strength chain {r['note']}")
+                p["explain"].append(f"strength chain {r['note']}")
+        if p:
             plans.append(p)
-        # SELL (only if we can actually sell — advisor sell present)
-        if s >= cfg["exit_strength_min"] and not _missing(adv.get("sell")):
-            # SPOT-ONLY: cannot sell what we do not hold.
-            if spot_only and float(holding or 0) <= 0:
-                reasons.append(f"{name} SELL skipped: spot-only, no inventory held")
-            else:
-                p = _build(name, c, "SELL", sell, s, direction, available, cfg, reasons, _edge, pair, shared15)
-                if p and g60_note:
-                    p["evidence"].append(g60_note); p["explain"].append(g60_note)
-                plans.append(p)
-
-    plans = [p for p in plans if p]
+    # SELL (only if we can actually sell — advisor sell present)
+    if chain_used:
+        sell_ok_total = bool(chain_sell) and not _missing(sell)
+    else:
+        sell_ok_total = (s is not None and s >= cfg["exit_strength_min"] and not _missing(sell))
+    if sell_ok_total and (not spot_only or float(holding or 0) > 0):
+        p = _build(entry_name, entry_ch, "SELL", sell, gauge, direction, available,
+                   cfg, reasons, _edge, pair, shared15)
+        for r in chain_reads:
+            if p and chain_used:
+                p["evidence"].append(f"strength chain {r['note']}")
+                p["explain"].append(f"strength chain {r['note']}")
+        if p:
+            plans.append(p)
     if not plans:
         if _edge:
             reasons.append("evidence gate: no channel+side has a PROVEN post-fee edge "
                            "(see logs/edge_report.json)")
-        reasons.append("no channel met entry/exit strength bands")
-        return _hold("no proven-edge setup", reasons)
+        reasons.append("entry lane did not clear the strength chain bands")
+        return _hold("no strength-chain setup", reasons)
 
     # --- brain bias alignment + HTF context ---
     bias = (verdict or {}).get("bias")
@@ -331,7 +406,7 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
         "edge": best.get("edge"),
         "brain_stance": stance, "brain_bias": bias, "tide_ctx": best.get("tide_ctx"),
         "evidence": best.get("evidence", []),
-        "explain": best["explain"] + [f"chose {best['channel']} over {len(plans)-1} other plan(s)"],
+        "explain": best["explain"] + [f"single entry lane {best['channel']} (no best-interval selection)"],
         "status": "UNVALIDATED",
     }
 

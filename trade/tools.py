@@ -236,16 +236,17 @@ def list_agents():
     import agents
     rows = agents.list_agents()
     return "no agents" if not rows else "\n".join(
-        f"{'on' if a['enabled'] else 'off'} {a['id']} {a['name']} [{a['kind']}/{a.get('profile') or '-'}] ${a['capital']}"
+        f"{'on' if a['enabled'] else 'off'} {a['id']} {a['name']} [{a['kind']}/"
+        f"{a.get('profile_label') or a.get('entry_interval') or '-'}] ${a['capital']}"
         for a in rows)
 
 
 @tool("create_agent", "Create an agent body (trading or youtube).",
-      {"kind": "trading|youtube", "profile": "quick|slow", "capital": "number", "name": "optional"})
-def create_agent(kind="trading", profile="slow", capital=0, name=None):
+      {"kind": "trading|youtube", "interval": "5m|15m|60m|240m|1440m", "capital": "number", "name": "optional"})
+def create_agent(kind="trading", interval="15m", capital=0, name=None):
     import agents
-    a = agents.create_agent(kind, profile, name=name, capital=float(capital or 0))
-    return f"created {a['id']} ({a['profile']}, ${a['capital']})"
+    a = agents.create_agent(kind, interval, name=name, capital=float(capital or 0))
+    return f"created {a['id']} ({a.get('profile_label') or interval} entry, ${a['capital']})"
 
 
 @tool("enable_agent", "Enable/arm an agent (its trades stay governed by the playbook).",
