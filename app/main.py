@@ -15,7 +15,8 @@ del _sub, _p
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit,
                                QPushButton, QLabel, QTextEdit, QListWidget, QListWidgetItem, QFrame,
-                               QSystemTrayIcon, QMenu, QDialog, QFormLayout, QComboBox, QDialogButtonBox)
+                               QSystemTrayIcon, QMenu, QDialog, QFormLayout, QComboBox, QDialogButtonBox,
+                               QSplitter)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QAction, QIcon
 from agents_ui import AgentsMixin
@@ -1205,36 +1206,64 @@ class BlackHorse(AgentsMixin, QMainWindow):
 
 
     def _build_stories(self):
+        from PyQt6.QtWidgets import QPlainTextEdit
         w = QWidget(); v = QVBoxLayout(w)
         v.addWidget(QLabel("Stories — book/script workspace, one visible folder plus a prompt."))
         row = QHBoxLayout()
         b_refresh = QPushButton("🔄 Reload story folders")
         b_refresh.clicked.connect(self._stories_refresh)
         row.addWidget(b_refresh); row.addStretch(1); v.addLayout(row)
+
+        # --- pickers pane: story folders / sections / files (all draggable) ---
+        pick = QWidget(); pv = QVBoxLayout(pick); pv.setContentsMargins(0, 0, 0, 0)
+        pv.addWidget(QLabel("story folders"))
         self.stories_list = QListWidget(); self.stories_list.currentRowChanged.connect(self._stories_show)
-        v.addWidget(self.stories_list, 1)
-        self.stories_sections = QListWidget(); self.stories_sections.setMaximumHeight(90); self.stories_sections.currentRowChanged.connect(self._stories_show_section)
-        v.addWidget(self.stories_sections)
-        rowf = QHBoxLayout(); rowf.addWidget(QLabel("files/sections in dir:"))
-        self.stories_files = QListWidget(); self.stories_files.setMaximumHeight(140); self.stories_files.currentRowChanged.connect(self._stories_show_file)
-        rowf.addWidget(self.stories_files,1); v.addLayout(rowf)
-        rowx = QHBoxLayout()
-        b_del = QPushButton("🗑 Delete selected"); b_del.clicked.connect(self._stories_delete_selected)
-        rowx.addWidget(b_del); rowx.addStretch(1); v.addLayout(rowx)
+        pv.addWidget(self.stories_list, 2)
+        pv.addWidget(QLabel("sections in project"))
+        self.stories_sections = QListWidget(); self.stories_sections.currentRowChanged.connect(self._stories_show_section)
+        pv.addWidget(self.stories_sections, 1)
+        pv.addWidget(QLabel("files / chapters / characters"))
+        self.stories_files = QListWidget(); self.stories_files.currentRowChanged.connect(self._stories_show_file)
+        pv.addWidget(self.stories_files, 2)
         rownav = QHBoxLayout()
+        b_del = QPushButton("🗑 Delete selected"); b_del.clicked.connect(self._stories_delete_selected)
         b_prev = QPushButton("◀ prev"); b_prev.clicked.connect(self._stories_prev)
         b_next = QPushButton("next ▶"); b_next.clicked.connect(self._stories_next)
-        rownav.addWidget(b_prev); rownav.addWidget(b_next); rownav.addStretch(1); v.addLayout(rownav)
-        from PyQt6.QtWidgets import QPlainTextEdit
-        self.stories_view = QPlainTextEdit(); self.stories_view.setReadOnly(True); self.stories_view.setFont(QFont("Georgia", 13))
-        v.addWidget(QLabel("— project details —")); v.addWidget(self.stories_view, 2)
-        self.stories_chat = QPlainTextEdit(); self.stories_chat.setReadOnly(True); self.stories_chat.setFont(QFont("Menlo", 12))
-        v.addWidget(QLabel("— project conversation (remembered) —")); v.addWidget(self.stories_chat, 2)
+        rownav.addWidget(b_del); rownav.addStretch(1); rownav.addWidget(b_prev); rownav.addWidget(b_next)
+        pv.addLayout(rownav)
+
+        # --- details pane: the reading box (gets the most room, has a floor) ---
+        pick.setMinimumHeight(110)
+
+        det = QWidget(); dv = QVBoxLayout(det); dv.setContentsMargins(0, 0, 0, 0)
+        dv.addWidget(QLabel("— project details —"))
+        self.stories_view = QPlainTextEdit(); self.stories_view.setReadOnly(True)
+        self.stories_view.setFont(QFont("Georgia", 13)); self.stories_view.setMinimumHeight(220)
+        self.stories_view.setPlaceholderText("Select a story/folder above, then a section/file, to read its details here.")
+        dv.addWidget(self.stories_view, 1)
+
+        # --- conversation pane ---
+        convo = QWidget(); cv = QVBoxLayout(convo); cv.setContentsMargins(0, 0, 0, 0)
+        cv.addWidget(QLabel("— project conversation (remembered) —"))
+        self.stories_chat = QPlainTextEdit(); self.stories_chat.setReadOnly(True)
+        self.stories_chat.setFont(QFont("Menlo", 12)); self.stories_chat.setMinimumHeight(140)
+        cv.addWidget(self.stories_chat, 1)
+
+        # vertical splitter: drag the dividers to size any pane (never stuck).
+        # stretch 0 on the picker so extra height goes to the reading boxes.
+        split = QSplitter(Qt.Orientation.Vertical)
+        for pane in (pick, det, convo):
+            split.addWidget(pane)
+        split.setStretchFactor(0, 0); split.setStretchFactor(1, 3); split.setStretchFactor(2, 2)
+        split.setSizes([170, 380, 240])
+        split.setChildrenCollapsible(True)
+        v.addWidget(split, 1)
+
         row2 = QHBoxLayout()
         self.stories_prompt = QLineEdit(); self.stories_prompt.returnPressed.connect(self._stories_send)
         self.stories_prompt.setPlaceholderText("Ask for a scene, add a chapter, or open a project like the book...")
         b_ask = QPushButton("Send to Spice"); b_ask.clicked.connect(self._stories_send)
-        row2.addWidget(self.stories_prompt,1); row2.addWidget(b_ask); v.addLayout(row2)
+        row2.addWidget(self.stories_prompt, 1); row2.addWidget(b_ask); v.addLayout(row2)
         self.pages[6] = w; w.hide()
         try: self._stories_refresh()
         except Exception: pass
