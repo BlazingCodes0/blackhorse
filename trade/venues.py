@@ -136,6 +136,22 @@ class Exchange:
     def fee_rates(self, pair):
         return _fee_fallback(self.name)
 
+    def _fee_cached(self, sym, ttl=6 * 3600):
+        """The account's own fee tier for this symbol, if read recently. Keys are
+        namespaced '<venue>:<symbol>' so they never collide with Kraken's snapshot."""
+        rec = _load_json(FEE_CACHE, {}).get(f"{self.name}:{sym}")
+        if rec and time.time() - rec.get("ts", 0) < ttl:
+            return rec
+        return None
+
+    def _fee_store(self, sym, rec):
+        cache = _load_json(FEE_CACHE, {})           # keep Kraken's own entries intact
+        cache[f"{self.name}:{sym}"] = rec
+        try:
+            FEE_CACHE.write_text(json.dumps(cache, indent=2))
+        except OSError:
+            pass
+
     # private
     def _creds(self):
         import exchanges
@@ -376,6 +392,23 @@ class Binance(Exchange):
         except Exception:
             return super().pair_rules(pair)
 
+    def fee_rates(self, pair):
+        sym = self._native(pair)
+        cached = self._fee_cached(sym)
+        if cached:
+            return {"maker_pct": cached["maker_pct"], "taker_pct": cached["taker_pct"],
+                    "source": cached["source"]}
+        try:
+            d = self._signed("GET", "/sapi/v1/asset/tradeFee", {"symbol": sym})
+            row = d[0] if isinstance(d, list) and d else {}
+            rec = {"maker_pct": round(float(row.get("makerCommission")) * 100, 4),
+                   "taker_pct": round(float(row.get("takerCommission")) * 100, 4),
+                   "source": "binance /sapi/v1/asset/tradeFee (account)", "ts": time.time()}
+            self._fee_store(sym, rec)
+            return {"maker_pct": rec["maker_pct"], "taker_pct": rec["taker_pct"], "source": rec["source"]}
+        except Exception:
+            return _fee_fallback("binance")
+
     def _signed(self, method, path, params):
         key, secret = self._creds()
         params = {**params, "timestamp": int(time.time() * 1000), "recvWindow": 5000}
@@ -480,6 +513,23 @@ class Coinbase(Exchange):
                     "pair": d.get("id"), "ts": time.time()}
         except Exception:
             return super().pair_rules(pair)
+
+    def fee_rates(self, pair):
+        sym = self._native(pair)
+        cached = self._fee_cached(sym)
+        if cached:
+            return {"maker_pct": cached["maker_pct"], "taker_pct": cached["taker_pct"],
+                    "source": cached["source"]}
+        try:
+            d = self._cdp("GET", "/api/v3/brokerage/transaction_summary")
+            ft = d.get("fee_tier") or d
+            rec = {"maker_pct": round(float(ft.get("maker_fee_rate")) * 100, 4),
+                   "taker_pct": round(float(ft.get("taker_fee_rate")) * 100, 4),
+                   "source": "coinbase transaction_summary (account)", "ts": time.time()}
+            self._fee_store(sym, rec)
+            return {"maker_pct": rec["maker_pct"], "taker_pct": rec["taker_pct"], "source": rec["source"]}
+        except Exception:
+            return _fee_fallback("coinbase")
 
     def _jwt(self, method, path):
         from cryptography.hazmat.primitives import hashes

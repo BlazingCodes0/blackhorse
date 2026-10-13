@@ -4,8 +4,10 @@ Delegates to trade/venues.py, so it follows whichever exchange is active:
   * Kraken  — the slow snapshot (logs/exchange_info.json, written by
               trade/exchange_watch.py) -> live TradeVolume/AssetPairs (cached in
               logs/fee_cache.json / logs/pair_info.json) -> config/exchange_fees.json.
-  * Binance — exchangeInfo filters (pair precision) + config/exchange_fees.json.
-  * Coinbase— product info (quote/base increment) + config/exchange_fees.json.
+  * Binance — exchangeInfo filters (pair precision) + the account's own tier from
+              /sapi/v1/asset/tradeFee (cached), else config/exchange_fees.json.
+  * Coinbase— product info (quote/base increment) + the account's own tier from
+              /api/v3/brokerage/transaction_summary (cached); else config/exchange_fees.json.
 
 Every order sizes itself with these numbers so cost + fee never exceeds cash.
 

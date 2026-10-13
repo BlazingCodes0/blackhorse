@@ -176,10 +176,14 @@ def sweep(refresh_signal=True, ask_brain=True, pair=None, cfg=None, pairs=None) 
 
     # exchange info: slow periodic refresh of REAL fees + precision for ALL pairs.
     # Stale-only, so it fires at most once per 6h while the loop keeps beating.
+    # Kraken-only: the snapshot (logs/exchange_info.json) is read only by the Kraken
+    # adapter; Binance/Coinbase fetch their product metadata live, so skip it for them.
     try:
-        import exchange_watch
-        if exchange_watch.age() > exchange_watch.interval_seconds():
-            rec["exchange_watch"] = exchange_watch.sweep()
+        import venues
+        if venues.active_name() == "kraken":
+            import exchange_watch
+            if exchange_watch.age() > exchange_watch.interval_seconds():
+                rec["exchange_watch"] = exchange_watch.sweep()
     except Exception as e:
         rec["exchange_watch"] = f"error: {e}"
 
