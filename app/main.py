@@ -107,7 +107,7 @@ class BlackHorse(AgentsMixin, QMainWindow):
         title.setStyleSheet("color:#6b7280")
         side.addWidget(title)
         self.nav = QListWidget(); self.nav.setObjectName("nav")
-        for page in ["Dashboard", "Skin (Defense)", "Trade (Exchange)", "Agents", "Heart (Filter)", "Console", "Stories"]:
+        for page in ["Dashboard", "Skin (Defense)", "Trade (Exchange)", "Agents", "Heart (Filter)", "Stories"]:
             self.nav.addItem(QListWidgetItem(page))
         self.nav.setMaximumWidth(180)
         self.nav.currentRowChanged.connect(self.switch_page)
@@ -125,7 +125,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
         cl.addWidget(self._build_trade())
         cl.addWidget(self._build_agents())
         cl.addWidget(self._build_heart())
-        cl.addWidget(self._build_console())
         cl.addWidget(self._build_stories())
         lay.addWidget(content)
         self.nav.setCurrentRow(1)
@@ -138,13 +137,12 @@ class BlackHorse(AgentsMixin, QMainWindow):
         # live-refresh the threat log
         self.timer = QTimer(self); self.timer.timeout.connect(self.refresh_log); self.timer.start(10000)
         self.timer3 = QTimer(self); self.timer3.timeout.connect(self.refresh_master); self.timer3.start(10000)
-        self.timer4 = QTimer(self); self.timer4.timeout.connect(self.refresh_console); self.timer4.start(10000)
         self.timer5 = QTimer(self); self.timer5.timeout.connect(self.refresh_dashboard); self.timer5.start(10000)
         import os as _os
         if _os.environ.get("BLACKHORSE_PROFILE"):
             import time as _time
             for _name in ("refresh_log", "refresh_master",
-                          "refresh_console", "refresh_dashboard", "refresh_trade",
+                          "refresh_dashboard", "refresh_trade",
                           "refresh_agents", "refresh_heart", "refresh_active_defense",
                           "refresh_skin_status"):
                 _fn = getattr(self, _name, None)
@@ -1019,131 +1017,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
         except Exception as e:
             self.heart_status.setText(f"heart error: {e}")
 
-    # ================= CONSOLE (stateful brain chat) =================
-    def _console_mod(self):
-        import sys as _s
-        if str(Path.home()/"blackhorse"/"trade") not in _s.path:
-            _s.path.insert(0, str(Path.home()/"blackhorse"/"trade"))
-        import console
-        return console
-
-    def _build_console(self):
-        from PyQt6.QtWidgets import QTabWidget
-        w = QWidget(); v = QVBoxLayout(w)
-        v.addWidget(QLabel("CONSOLE — talk to the brain. It knows your capital, positions, P&L, and memory."))
-        # status strip: loop + last signal, read fresh each paint
-        self.console_status = QLabel("loop: — · signal: —")
-        self.console_status.setStyleSheet("color:#9ca3af;font-size:11px")
-        v.addWidget(self.console_status)
-        tabs = QTabWidget(); v.addWidget(tabs, 1)
-        # ---- tab: PAPER (default, always live-safe) ----
-        paper = QWidget(); pv = QVBoxLayout(paper)
-        self.console_view = QTextEdit(); self.console_view.setReadOnly(True)
-        self.console_view.setFont(QFont("Monospace", 9))
-        self.console_view.setUndoRedoEnabled(False)
-        self.console_view.document().setMaximumBlockCount(400)  # cap scrollback
-        pv.addWidget(self.console_view, 1)
-        b_clear = QPushButton("Clear chat"); b_clear.clicked.connect(lambda: self.console_view.clear())
-        pv.addWidget(b_clear)
-        row = QHBoxLayout()
-        self.console_input = QLineEdit()
-        self.console_input.setPlaceholderText("e.g.  I gave it 100, what's up?   |   allocate 50   |   reserve 20")
-        self.console_input.returnPressed.connect(self.console_send)
-        b_send = QPushButton("Send to brain"); b_send.clicked.connect(self.console_send)
-        row.addWidget(self.console_input); row.addWidget(b_send)
-        pv.addLayout(row)
-        tabs.addTab(paper, "PAPER")
-        # ---- tab: LIVE (locked until flag + execute flip) ----
-        live = QWidget(); lv = QVBoxLayout(live)
-        self.live_view = QTextEdit(); self.live_view.setReadOnly(True)
-        self.live_view.setFont(QFont("Monospace", 9))
-        lv.addWidget(self.live_view, 1)
-        live_note = QLabel("LIVE is locked: execute.py refuses LIVE and logs/paper_period.flag is not set.\n"
-                           "When those flip, this tab mirrors the live positions, P&L and fills.")
-        live_note.setWordWrap(True); live_note.setStyleSheet("color:#9ca3af;font-size:11px")
-        lv.addWidget(live_note)
-        tabs.addTab(live, "LIVE 🔒")
-        self.pages[5] = w; w.hide()
-        return w
-
-    def refresh_console(self):
-        # thread-safe handoff: if a brain reply is ready, append it (replacing the thinking line)
-        wait = getattr(self, "_console_pending", None)
-        if wait:
-            self._console_pending = None
-            reply = wait[0]
-            from PyQt6.QtGui import QTextCursor
-            cur = self.console_view.textCursor()
-            cur.movePosition(QTextCursor.End)
-            cur.movePosition(QTextCursor.StartOfBlock, QTextCursor.MoveAnchor)
-            cur.movePosition(QTextCursor.StartOfBlock, QTextCursor.KeepAnchor)
-            if "thinking" in cur.selectedText():
-                cur.removeSelectedText()
-            self.console_view.moveCursor(QTextCursor.End)
-            _sb = self.console_view.verticalScrollBar()
-            _stick = _sb.value() >= _sb.maximum() - 40
-            self.console_view.append(f"<b>Spice:</b> {reply}")
-            if _stick: _sb.setValue(_sb.maximum())
-        import json, pathlib
-        bh = pathlib.Path.home()/"blackhorse"
-        loop_state = (bh/"logs"/"loop_state.json")
-        sig_path = (bh/"logs"/"signal_latest.json")
-        loop = "loop: unknown"
-        try:
-            s = json.loads(loop_state.read_text())
-            loop = f"loop: {'ok' if s.get('heartbeat')=='ok' else 'halted'} · last decision {s.get('decision')}"
-        except Exception:
-            pass
-        sig = "signal: not run"
-        try:
-            d = json.loads(sig_path.read_text())
-            ch = d.get("channels", {})
-            ripple = ch.get("ripple", {})
-            sig = f"signal: {d.get('pair')} @ {ripple.get('currPrice')} · 60m strength {ripple.get('strength')} · tide {ch.get('tide',{}).get('trendState')}"
-        except Exception:
-            pass
-        self.console_status.setText(f"{loop}  |  {sig}")
-        try:
-            import heart
-            txt = "unlock checks:\n" + "\n".join(f"  {k}: {v}" for k, v in heart.unlock().get("checks", {}).items())
-            if txt != getattr(self, "_last_live_view", None):
-                sb = self.live_view.verticalScrollBar()
-                was_at_bottom = sb.value() >= sb.maximum() - 40
-                prev = sb.value()
-                self.live_view.setPlainText(txt)
-                sb.setValue(sb.maximum() if was_at_bottom else prev)
-                self._last_live_view = txt
-        except Exception:
-            pass
-
-    def console_send(self):
-        text = self.console_input.text().strip()
-        if not text:
-            return
-        self.console_input.clear()
-        self.console_view.append(f"<b>you:</b> {text}")
-        _sb = self.console_view.verticalScrollBar()
-        _stick = _sb.value() >= _sb.maximum() - 40
-        if _stick: _sb.setValue(_sb.maximum())
-        self.console_view.append("<i>Spice: thinking… (opencode can take 10–30s on this box)</i>")
-        if _stick: _sb.setValue(_sb.maximum())
-        import threading
-        self._console_pending = getattr(self, "_console_pending", None)
-        def _work(text, wait):
-            try:
-                import sys as _s
-                if str(Path.home()/"blackhorse"/"trade") not in _s.path:
-                    _s.path.insert(0, str(Path.home()/"blackhorse"/"trade"))
-                import spice
-                reply = spice.handle(text)
-            except Exception as e:
-                reply = f"error: {e}"
-            wait.append(reply)  # thread-safe handoff
-        wait = []
-        self._console_pending = wait
-        threading.Thread(target=_work, args=(text, wait), daemon=True).start()
-
-
     # ================= LOOP control (on Trade page) =================
     def _loop_start(self):
         import sys as _s
@@ -1261,10 +1134,10 @@ class BlackHorse(AgentsMixin, QMainWindow):
 
         row2 = QHBoxLayout()
         self.stories_prompt = QLineEdit(); self.stories_prompt.returnPressed.connect(self._stories_send)
-        self.stories_prompt.setPlaceholderText("Ask for a scene, add a chapter, or open a project like the book...")
-        b_ask = QPushButton("Send to Spice"); b_ask.clicked.connect(self._stories_send)
+        self.stories_prompt.setPlaceholderText("Add a chapter, scene, idea or note to the selected project...")
+        b_ask = QPushButton("Save to project"); b_ask.clicked.connect(self._stories_send)
         row2.addWidget(self.stories_prompt, 1); row2.addWidget(b_ask); v.addLayout(row2)
-        self.pages[6] = w; w.hide()
+        self.pages[5] = w; w.hide()
         try: self._stories_refresh()
         except Exception: pass
         return w
@@ -1468,97 +1341,56 @@ class BlackHorse(AgentsMixin, QMainWindow):
 
     def _stories_send(self):
         text = self.stories_prompt.text().strip()
-        if not text: return
+        if not text:
+            return
         self.stories_prompt.clear()
-        def _work():
-            try:
-                import sys as _s
-                if str(Path.home()/"blackhorse"/"trade") not in _s.path:
-                    _s.path.insert(0, str(Path.home()/"blackhorse"/"trade"))
-                import spice
-                return f"<b>Spice:</b> {spice.handle(text)}"
-            except Exception as e:
-                return f"<b>error:</b> {e}"
-        # if a section is selected, the prompt also writes a note into that folder
+        # save the note as a file in the selected project's section folder
         import pathlib as _pb, json as _json, time as _t, hashlib as _hx, re as _re
-        try:
-            project_title = (self.stories_list.currentItem().text() if self.stories_list.currentItem() else None)
-            section_item = self.stories_sections.currentItem() if hasattr(self, 'stories_sections') else None
-            if project_title and section_item and section_item.text() in ('chapters','ideas','scenes','notes','characters'):
-                slug = _hx.md5(project_title.strip().encode()).hexdigest()[:8]
-                folder = _pb.Path.home()/"blackhorse"/"logs"/"storybook"/f"{slug}_project"/section_item.text()
-                try: folder.mkdir(parents=True, exist_ok=True)
-                except Exception: pass
-                base = text.splitlines()[0][:40] if text else ''
-                # turn the first line into a readable, filesystem-safe file name
-                safe = _re.sub(r'[^a-zA-Z0-9]+', '_', base).strip('_').lower()
+        root = _pb.Path.home()/"blackhorse"/"logs"/"storybook"
+        project_item = self.stories_list.currentItem()
+        project_title = project_item.text() if project_item else None
+        section_item = self.stories_sections.currentItem() if hasattr(self, 'stories_sections') else None
+        section = section_item.text() if section_item else None
+        first = text.splitlines()[0][:40] if text else 'note'
+        saved = None
+        if project_title and section in ('chapters','ideas','scenes','notes','characters'):
+            slug = _hx.md5(project_title.strip().encode()).hexdigest()[:8]
+            folder = root/f"{slug}_project"/section
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                safe = _re.sub(r'[^a-zA-Z0-9]+', '_', first).strip('_').lower()
                 safe = (safe or _t.strftime('%Y-%m-%d', _t.gmtime()))[:37]
-                # chapters keep a chapter number as well as a name
-                if section_item.text() == 'chapters':
-                    try:
-                        _meta = _json.loads(f.read_text())
-                        ch_count = len(_meta.get('chapters', [])) + 1
-                    except Exception:
-                        ch_count = 1
-                    fname = f"chapter_{ch_count:02d}_{safe}.md"
-                else:
-                    fname = f"{safe}.md"
-                folder.joinpath(fname).write_text(text)
-                # also push into project JSON chapters/notes if applicable
-                for f in (_pb.Path.home()/"blackhorse"/"logs"/"storybook").glob('*.json'):
-                    try:
-                        meta2=_json.loads(f.read_text())
-                        if meta2.get('title')==project_title:
-                            if section_item.text() == 'chapters':
-                                meta2.setdefault('chapters',[]).append({"title": text.splitlines()[0][:40] if text else 'chapter note', "text": text})
-                                f.write_text(_json.dumps(meta2, indent=2))
-                            break
-                    except Exception: pass
-        except Exception: pass
-        # save into this project's thread for later
-        try:
-            items=[x.text() for x in [self.stories_list.currentItem()] if x]
-            if items:
-                root=_pb.Path.home()/"blackhorse"/"logs"/"storybook"
+                folder.joinpath(f"{safe}.md").write_text(text)
+                saved = f"{section}/{safe}.md"
+            except Exception:
+                pass
+            # mirror a chapter into the project's own json
+            if section == 'chapters':
                 for f in root.glob('*.json'):
                     try:
-                        meta=_json.loads(f.read_text())
-                        if meta.get('title')==items[0]:
-                            meta.setdefault('thread',[]).append({"q": text, "a": "", "ts": _t.strftime('%Y-%m-%dT%H:%M:%SZ', _t.gmtime())})
-                            f.write_text(_json.dumps(meta, indent=2)); break
-                    except Exception: pass
-            # don't block the GUI: call Spice on a worker thread and reveal when done
-            reply_holder=[]
-            self.stories_chat.appendPlainText(f"you: {text}\nSpice: thinking…")
-            self.stories_chat.verticalScrollBar().setValue(self.stories_chat.verticalScrollBar().maximum())
-            def _run():
-                reply_holder.append(_work())
-            import threading
-            threading.Thread(target=_run, daemon=True).start()
-            def _reap():
-                if reply_holder:
-                    try: self.stories_chat.verticalScrollBar().setValue(self.stories_chat.verticalScrollBar().maximum())
-                    except Exception: pass
-                    reply = reply_holder[0]
-                    current=[x.text() for x in [self.stories_list.currentItem()] if x]
-                    if current:
-                        root = _pb.Path.home()/"blackhorse"/"logs"/"storybook"
-                        for f in root.glob('*.json'):
-                            try:
-                                meta=_json.loads(f.read_text())
-                                if meta.get('title')==current[0]:
-                                    if meta.get('thread'): meta['thread'][-1]['a']=reply
-                                    f.write_text(_json.dumps(meta, indent=2)); break
-                            except Exception: pass
-                    # always tell the owner, even if no project row is selected
-                    self.stories_chat.appendPlainText(reply)
-                    self.stories_chat.verticalScrollBar().setValue(self.stories_chat.verticalScrollBar().maximum())
-                    self._stories_show()
-                    return
-                QTimer.singleShot(1500, _reap)
-            _reap()
-        except Exception as e:
-            self.stories_chat.appendPlainText(f"error: {e}")
+                        meta = _json.loads(f.read_text())
+                        if meta.get('title') == project_title:
+                            meta.setdefault('chapters', []).append({"title": first or 'chapter note', "text": text})
+                            f.write_text(_json.dumps(meta, indent=2))
+                            break
+                    except Exception:
+                        pass
+        # remember the entry in this project's thread for later
+        if project_title:
+            for f in root.glob('*.json'):
+                try:
+                    meta = _json.loads(f.read_text())
+                    if meta.get('title') == project_title:
+                        meta.setdefault('thread', []).append({"q": text, "a": "", "ts": _t.strftime('%Y-%m-%dT%H:%M:%SZ', _t.gmtime())})
+                        f.write_text(_json.dumps(meta, indent=2)); break
+                except Exception:
+                    pass
+        if saved:
+            self.stories_chat.appendPlainText(f"saved to {saved}")
+        else:
+            self.stories_chat.appendPlainText(f"not saved — select a project and a section first, then try again: {first}")
+        sb = self.stories_chat.verticalScrollBar(); sb.setValue(sb.maximum())
+        self._stories_show()
 
     def _build_skin(self):
         from PyQt6.QtWidgets import QScrollArea
