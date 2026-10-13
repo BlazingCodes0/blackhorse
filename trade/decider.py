@@ -66,14 +66,12 @@ def _num(v):
         return None
 
 
-def _rsi(interval_min: int, periods: int = 14, url_base: str = "https://api.kraken.com/0/public/OHLC"):
-    """RSI(periods) of DOT/USD closes at the given interval, from Kraken public data.
-    Returns None when unavailable (never blocks, just informs)."""
-    import urllib.request, urllib.parse
+def _rsi(interval_min: int, periods: int = 14):
+    """RSI(periods) of DOT/USD closes at the given interval, from the ACTIVE exchange
+    (via venues). Returns None when unavailable (never blocks, just informs)."""
     try:
-        q = urllib.parse.urlencode({"pair": "DOTUSD", "interval": interval_min})
-        d = json.loads(urllib.request.urlopen(f"{url_base}?{q}", timeout=10).read())
-        rows = d.get("result", {}).get("DOTUSD", [])
+        import venues
+        rows = venues.ohlc("DOT/USD", f"{interval_min}m")
         closes = [float(r[4]) for r in rows[-(periods * 2 + 2):]]
         if len(closes) < periods + 1:
             return None

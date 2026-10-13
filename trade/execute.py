@@ -17,6 +17,7 @@ from pathlib import Path
 BH = Path.home() / "blackhorse"
 sys.path.insert(0, str(BH / "trade"))
 sys.path.insert(0, str(BH / "memory"))
+import venues   # the exchange adapter layer (kraken / binance / coinbase)
 SLIPPAGE_PCT_PER_SIDE = 0.1
 FEE_PCT_PER_SIDE = 0.80          # conservative taker fallback; real value from fees.rates()
 
@@ -45,28 +46,15 @@ def _norm_pair(raw: str) -> str:
     return f"{up}/USD"
 
 
-def cancel(txid: str) -> dict:
-    """Cancel a live order by Kraken txid."""
-    import exchanges, time, urllib.request, urllib.parse, hmac, hashlib, base64, json
-    name = exchanges.active_exchange()["name"]
-    creds = exchanges.require_credentials(name)
-    key = creds["api_key"]; secret = creds["private_key"]
-    url = "https://api.kraken.com"
-    path = "/0/private/CancelOrder"
-    nonce = str(int(time.time() * 1000))
-    body = {"nonce": nonce, "txid": txid}
-    data = urllib.parse.urlencode(body).encode()
-    sha = hashlib.sha256(nonce.encode() + data).digest()
-    sig = hmac.new(base64.b64decode(secret), path.encode() + sha, hashlib.sha512)
-    req = urllib.request.Request(url + path, data=data, method="POST",
-                                 headers={"API-Key": key, "API-Sign": base64.b64encode(sig.digest()).decode()})
+def cancel(txid: str, pair: str = None) -> dict:
+    """Cancel a resting order on the active exchange (order id is native to it)."""
     try:
-        resp = json.loads(urllib.request.urlopen(req, timeout=30).read())
+        r = venues.cancel(txid, pair)
     except Exception as e:
         return {"ok": False, "reason": f"cancel error: {e}"}
-    if resp.get("error"):
-        return {"ok": False, "reason": f"kraken: {resp['error']}"}
-    return {"ok": True, "result": resp.get("result")}
+    if not r.get("ok"):
+        return {"ok": False, "reason": r.get("error")}
+    return {"ok": True, "result": r.get("result")}
 
 
 def manual_order(text: str):
@@ -230,95 +218,49 @@ _BAL = {"ts": 0.0, "v": None}
 
 
 def invalidate_balance():
-    _BAL["ts"] = 0.0
+    venues.invalidate_balance()
 
 
 def _kraken_private(path: str, body: dict) -> dict:
-    """Signed Kraken private request. body must already contain 'nonce'."""
-    import exchanges, time, urllib.request, urllib.parse, hmac, hashlib, base64, json
-    global _LAST_NONCE
-    _LAST_NONCE = max(int(time.time() * 1000), _LAST_NONCE + 1)   # strictly increasing, no same-ms collisions
-    body = {**body, "nonce": str(_LAST_NONCE)}
-    creds = exchanges.require_credentials(heart_venue())
-    key, secret = creds["api_key"], creds["private_key"]
-    data = urllib.parse.urlencode(body).encode()
-    sha = hashlib.sha256(str(body["nonce"]).encode() + data).digest()
-    sig = hmac.new(base64.b64decode(secret), path.encode() + sha, hashlib.sha512)
-    req = urllib.request.Request("https://api.kraken.com" + path, data=data, method="POST",
-                                 headers={"API-Key": key,
-                                          "API-Sign": base64.b64encode(sig.digest()).decode()})
-    return json.loads(urllib.request.urlopen(req, timeout=30).read())
+    """Kraken-only signed private request — kept solely for store.backfill_from_kraken.
+    The whole live path now goes through venues.py."""
+    return venues.get("kraken")._private(path, body)
 
 
 def kraken_balance() -> dict:
-    """Base-asset balances available to sell, keyed by base symbol."""
-    import time
-    if _BAL["v"] is not None and time.time() - _BAL["ts"] < 4:
-        return dict(_BAL["v"])                     # same cycle: one consistent read
-    r = {}
-    for attempt in range(3):                       # a failed read must never look like "zero funds"
-        try:
-            r = _kraken_private("/0/private/Balance", {"nonce": str(int(time.time() * 1000))})
-        except Exception as e:
-            r = {"error": [f"request failed: {e}"]}
-        if not r.get("error"):
-            break
-        _BAL["err"] = r.get("error")
-        time.sleep(1.5)
-    if r.get("error"):
-        return {}                                  # {} == UNKNOWN (callers must not read it as 0)
-    out = {}
-    for asset, amt in (r.get("result") or {}).items():
-        a = asset.upper().replace("X", "", 1) if asset.startswith("X") and len(asset) > 3 else asset
-        a = {"XXBT": "BTC", "XBT": "BTC"}.get(asset.upper(), asset.upper().lstrip("XZ"))
-        out[a] = out.get(a, 0) + float(amt)
-    _BAL["v"], _BAL["ts"] = dict(out), time.time()
-    return out
+    """Balances available to sell on the active exchange, keyed by base symbol.
+    Name kept for existing callers. {} means UNKNOWN — never read it as zero funds."""
+    try:
+        return venues.balance()
+    except Exception:
+        return {}
 
 
 def kraken_last_price(pair: str) -> float | None:
-    import urllib.request, json
-    kpair = _norm_pair(pair).replace("/", "")
-    if kpair.startswith("BTC"):
-        kpair = kpair.replace("BTC", "XBT", 1)
-    try:
-        d = json.loads(urllib.request.urlopen(
-            urllib.request.Request(f"https://api.kraken.com/0/public/Ticker?pair={kpair}",
-                                   headers={"User-Agent": "BlackHorse/1.0"}), timeout=15).read())
-        res = d.get("result") or {}
-        row = next(iter(res.values()))
-        return float(row["c"][0])
-    except Exception:
-        return None
+    """Last price on the active exchange (name kept for existing callers)."""
+    return venues.last_price(pair)
 
 
 def _kpair(pair: str) -> str:
-    k = _norm_pair(pair).replace("/", "")
-    return k.replace("BTC", "XBT", 1) if k.startswith("BTC") else k
+    """Native symbol on the active exchange (name kept for existing callers)."""
+    return venues.native(pair)
 
 
 def _ticker(pair: str):
-    """Public (bid, ask) for a pair."""
-    import urllib.request
-    d = json.loads(urllib.request.urlopen(urllib.request.Request(
-        f"https://api.kraken.com/0/public/Ticker?pair={_kpair(pair)}",
-        headers={"User-Agent": "BlackHorse/1.0"}), timeout=15).read())
-    row = next(iter(d["result"].values()))
-    return float(row["b"][0]), float(row["a"][0])
+    """Public (bid, ask) for a pair on the active exchange."""
+    return venues.ticker(pair)
 
 
-def kraken_fill(txid: str, tries: int = 6) -> dict | None:
-    """Actual fill of a Kraken order: {price, vol, cost, fee}. The exchange is the
-    truth, not the plan. Returns None if it can't be read."""
+def kraken_fill(txid: str, pair: str = None, tries: int = 6) -> dict | None:
+    """Actual fill of an order on the active exchange: {price, vol, cost, fee}.
+    The exchange is the truth, not the plan. Returns None if it can't be read."""
     import time
     for _ in range(tries):
         try:
-            r = _kraken_private("/0/private/QueryOrders",
-                                {"nonce": str(int(time.time() * 1000)), "txid": txid})
-            o = (r.get("result") or {}).get(txid)
+            o = venues.order_status(txid, pair)
             if o and o.get("status") == "closed" and float(o.get("vol_exec") or 0) > 0:
                 return {"price": float(o["price"]), "vol": float(o["vol_exec"]),
-                        "cost": float(o["cost"]), "fee": float(o["fee"])}
+                        "cost": float(o.get("cost") or 0), "fee": float(o.get("fee") or 0)}
         except Exception:
             pass
         time.sleep(1.5)
@@ -371,21 +313,17 @@ def _ceil_dex(x: float, decimals: int) -> float:
 
 
 def sync_pending() -> list:
-    """Reconcile resting limit entries with Kraken. FILLED (or partially filled then
-    expired) -> open the position at the REAL fill. Expired unfilled -> drop. Open past
-    expiry -> cancel. The exchange is the truth. Returns the events."""
+    """Reconcile resting limit entries with the active exchange. FILLED (or partially
+    filled then expired) -> open the position at the REAL fill. Expired unfilled -> drop.
+    Open past expiry -> cancel. The exchange is the truth. Returns the events."""
     import time, portfolio
     pend = _pend_load()
     if not pend:
         return []
     try:
-        r = _kraken_private("/0/private/QueryOrders", {"nonce": str(int(time.time() * 1000)),
-                                                       "txid": ",".join(p["txid"] for p in pend)})
+        res = venues.orders([(p["txid"], p.get("pair")) for p in pend])
     except Exception:
         return []
-    if r.get("error"):
-        return []
-    res = r.get("result") or {}
     keep, events = [], []
     for p in pend:
         o = res.get(p["txid"])
@@ -404,8 +342,7 @@ def sync_pending() -> list:
         if st in ("pending", "open"):
             if time.time() > float(p.get("expires", 0)) + 90:
                 try:
-                    _kraken_private("/0/private/CancelOrder",
-                                    {"nonce": str(int(time.time() * 1000)), "txid": p["txid"]})
+                    venues.cancel(p["txid"], p.get("pair"))
                 except Exception:
                     pass
             keep.append(p); continue
@@ -436,9 +373,6 @@ def _live_order(plan: dict, pair: str) -> dict:
     tracked as pending until it actually fills. SELL: market, sells held inventory."""
     import time, portfolio, fees
     pair = _norm_pair(pair or "DOT/USD")
-    kpair = pair.replace("/", "")
-    if kpair.startswith("BTC"):
-        kpair = kpair.replace("BTC", "XBT", 1)
     side = "buy" if plan["action"] == "BUY" else "sell"
     # default LIMIT (maker) for both buy and sell; explicit market only if the user asks
     otype = str(plan.get("order_type") or "limit").lower()
@@ -469,8 +403,10 @@ def _live_order(plan: dict, pair: str) -> dict:
         if plan.get("agent") and has_pending(plan["agent"], pair):
             return {"ok": False, "blocked": True, "reason": "an entry order is already working for this agent/pair"}
         quote = pair.split("/")[1].upper()
+        quote_like = ("USD", "USDT", "USDC", "EUR", "CAD", "GBP")
         bals = kraken_balance()
-        cash = float(bals.get(quote, 0)) if quote in ("USD", "USDT", "USDC", "EUR", "CAD", "GBP") else 0.0
+        # sum every quote-like holding (Binance settles in USDT, Coinbase in USD, ...)
+        cash = sum(float(v) for k, v in bals.items() if k in quote_like) if quote in quote_like else 0.0
         cash -= pending_outlay()                     # funds already locked in resting orders
         if cash <= 0:
             return {"ok": False, "blocked": True, "reason": f"no {quote} cash available to buy"}
@@ -500,23 +436,15 @@ def _live_order(plan: dict, pair: str) -> dict:
             snapshot = exits.take_snapshot(plan.get("agent"), plan.get("channel"), pair=pair)
         except Exception:
             snapshot = None
-    nonce = str(int(time.time() * 1000))
-    body = {"nonce": nonce, "pair": kpair, "type": side, "ordertype": otype, "volume": str(volume)}
-    if otype == "limit":
-        body["price"] = str(price)
-        if expire:
-            body["expiretm"] = f"+{expire}"
     if os.environ.get("BH_VALIDATE_ONLY"):
-        body["validate"] = "true"
-    r = _kraken_private("/0/private/AddOrder", body)
+        return {"ok": True, "validated": True,
+                "body": {"pair": pair, "type": side, "ordertype": otype, "volume": str(volume),
+                         **({"price": str(price), "expiretm": f"+{expire}"} if otype == "limit" and price is not None else {})}}
+    res = venues.place_order(pair, side, otype, volume, price, expire)
     invalidate_balance()
-    if r.get("error"):
-        return {"ok": False, "blocked": True, "reason": f"kraken: {r['error']}"}
-    if os.environ.get("BH_VALIDATE_ONLY"):
-        return {"ok": True, "validated": True, "body": {k: v for k, v in body.items() if k != "nonce"},
-                "kraken": r.get("result")}
-
-    txid = (r.get("result") or {}).get("txid", [None])[0]
+    if not res.get("ok"):
+        return {"ok": False, "blocked": True, "reason": f"order rejected: {res.get('error')}"}
+    txid = res.get("order_id")
     try:
         import store
         store.live_order(txid, plan.get("agent", "house"), pair, side, otype, price if otype == "limit" else None,
@@ -534,10 +462,10 @@ def _live_order(plan: dict, pair: str) -> dict:
                          "expires": time.time() + expire, "snapshot": snapshot})
             _pend_save(pend)
             return {"ok": True, "mode": "LIVE", "txid": txid, "pending": True, "price": price,
-                    "volume": volume, "expires_in_s": expire, "kraken": r.get("result")}
+                    "volume": volume, "expires_in_s": expire, "result": res.get("result")}
         fill = float(price) or (kraken_last_price(pair) or 0)
         qty_rec, fee_rec = volume, None
-        real = kraken_fill(txid) if txid else None
+        real = kraken_fill(txid, pair) if txid else None
         if real:                                  # record what the exchange actually did
             fill, qty_rec, fee_rec = real["price"], real["vol"], real["fee"]
             try:
@@ -555,7 +483,7 @@ def _live_order(plan: dict, pair: str) -> dict:
                   if p.get("pair") == pair and str(p.get("side")).upper() == "BUY"]
         if opened:
             last = kraken_last_price(pair) or float(price or 0)
-            real = kraken_fill(txid) if txid else None
+            real = kraken_fill(txid, pair) if txid else None
             try:
                 import store
                 if real:
@@ -564,7 +492,7 @@ def _live_order(plan: dict, pair: str) -> dict:
                 pass
             portfolio.close_position(opened[0]["id"], real["price"] if real else last,
                                      reason="live exit", fee=real["fee"] if real else None)
-    return {"ok": True, "mode": "LIVE", "txid": txid, "volume": volume, "kraken": r.get("result")}
+    return {"ok": True, "mode": "LIVE", "txid": txid, "volume": volume, "result": res.get("result")}
 
 
 def sell_position(pos_id: str, reason: str, price: float = None) -> dict:
@@ -591,18 +519,15 @@ def sell_position(pos_id: str, reason: str, price: float = None) -> dict:
                      positions=len(portfolio.open_positions()), holding_qty=held, manual=False)
     if hv["decision"] != "ALLOW":
         return {"ok": False, "reason": f"heart {hv['decision']}: {hv['reason']}"}
-    kpair = _kpair(pair)
-    body = {"nonce": str(int(time.time() * 1000)), "pair": kpair, "type": "sell",
-            "ordertype": "limit", "volume": str(volume), "price": str(price)}
     if os.environ.get("BH_VALIDATE_ONLY"):
-        body["validate"] = "true"
-    r = _kraken_private("/0/private/AddOrder", body)
+        return {"ok": True, "validated": True,
+                "body": {"pair": pair, "type": "sell", "ordertype": "limit",
+                         "volume": str(volume), "price": str(price)}}
+    res = venues.place_order(pair, "sell", "limit", volume, price, None)
     invalidate_balance()
-    if r.get("error"):
-        return {"ok": False, "reason": f"kraken: {r['error']}"}
-    if os.environ.get("BH_VALIDATE_ONLY"):
-        return {"ok": True, "validated": True, "body": {k: v for k, v in body.items() if k != "nonce"}}
-    txid = (r.get("result") or {}).get("txid", [None])[0]
+    if not res.get("ok"):
+        return {"ok": False, "reason": f"order rejected: {res.get('error')}"}
+    txid = res.get("order_id")
     try:
         import store
         store.live_order(txid, pos.get("agent"), pair, "sell", "limit", price, volume,
@@ -642,14 +567,9 @@ def sync_exits() -> list:
     min_net = float(cfg.get("exit_min_net_pct", 0.25))
     requote = float(cfg.get("exit_requote_seconds", 20))
     try:
-        r = _kraken_private("/0/private/QueryOrders",
-                            {"nonce": str(int(time.time() * 1000)),
-                             "txid": ",".join(e["txid"] for e in ex)})
+        res = venues.orders([(e["txid"], e.get("pair")) for e in ex])
     except Exception:
         return []
-    if r.get("error"):
-        return []
-    res = r.get("result") or {}
     open_pos = {p["id"]: p for p in portfolio.open_positions()}
     drop, events = set(), []
     for e in ex:
@@ -695,8 +615,7 @@ def sync_exits() -> list:
         if st in ("open", "pending"):                 # still working
             if time.time() - float(e.get("placed", 0)) >= requote:
                 try:
-                    _kraken_private("/0/private/CancelOrder",
-                                    {"nonce": str(int(time.time() * 1000)), "txid": e["txid"]})
+                    venues.cancel(e["txid"], e.get("pair"))
                 except Exception:
                     pass
                 d = portfolio._load()

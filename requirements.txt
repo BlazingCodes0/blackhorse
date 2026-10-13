@@ -5,7 +5,8 @@ PyQt6>=6.5
 psutil>=5.9
 
 # Optional — features degrade gracefully when these are absent:
-#   encrypted secret vault (trade/vault.py)
+#   encrypted secret vault (trade/vault.py) AND the Coinbase Advanced (CDP)
+#   JWT signer (trade/venues.py) — without it, Coinbase private calls are refused
 cryptography>=41
 #   image tools (trade/tools.py, plugins/imagemagick.py)
 Pillow>=10

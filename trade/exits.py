@@ -113,13 +113,9 @@ def candidates(pos: dict, cfg: dict, taker: float) -> list:
 
 
 def ticker(pair: str):
-    k = pair.replace("/", "")
-    k = k.replace("BTC", "XBT", 1) if k.startswith("BTC") else k
-    d = json.loads(urllib.request.urlopen(urllib.request.Request(
-        f"https://api.kraken.com/0/public/Ticker?pair={k}", headers={"User-Agent": "BlackHorse/1.0"}),
-        timeout=10).read())
-    row = next(iter(d["result"].values()))
-    return float(row["b"][0]), float(row["a"][0])
+    """Public (bid, ask) on the ACTIVE exchange (via venues)."""
+    import venues
+    return venues.ticker(pair)
 
 
 def _exit_zone(pos: dict, cfg: dict):
