@@ -482,7 +482,8 @@ class Coinbase(Exchange):
             return super().pair_rules(pair)
 
     def _jwt(self, method, path):
-        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
         key_name, pem = self._creds()
@@ -493,9 +494,9 @@ class Coinbase(Exchange):
         payload = b64url(json.dumps({"sub": key_name, "iss": "cdp", "nbf": now, "exp": now + 120,
                                      "uri": f"{method} {host}{path}"}, separators=(",", ":")).encode())
         signing = header + b"." + payload
-        key = serialization.load_pem_private_key(private_pem.encode(), password=None)
+        key = serialization.load_pem_private_key(pem.encode(), password=None)
         der = key.sign(signing, ec.ECDSA(hashes.SHA256()))
-        r, s = asym_utils_decode(der)
+        r, s = decode_dss_signature(der)
         raw = r.to_bytes(32, "big") + s.to_bytes(32, "big")
         return (signing + b"." + b64url(raw)).decode()
 
@@ -536,6 +537,17 @@ class Coinbase(Exchange):
             return {"ok": True, "result": r}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    def orders(self, refs):
+        out = {}
+        for oid, pair in refs:
+            try:
+                s = self.order_status(oid, pair)
+                if s:
+                    out[oid] = s
+            except Exception:
+                continue
+        return out
 
     def order_status(self, order_id, pair=None):
         d = self._cdp("GET", f"/api/v3/brokerage/orders/historical/{order_id}")
@@ -622,7 +634,7 @@ def orders(refs):
 
 
 def order_status(order_id, pair=None):
-    return active().orders([(order_id, pair)]).get(order_id)
+    return active().order_status(order_id, pair)
 
 
 if __name__ == "__main__":
