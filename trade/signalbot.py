@@ -27,13 +27,30 @@ def _node() -> str:
     return shutil.which("node") or "node"
 
 
+def _resolve_exchange(explicit=None) -> str:
+    """The venue the SignalBot runs against = the one the user selected (the active
+    exchange) AND has keys for. If the active exchange has no credentials, fall
+    back to the first enabled exchange that does; only if none is ready do we run
+    the active name (its public market data still works keyless)."""
+    if explicit:
+        return explicit
+    try:
+        import exchanges
+        reg = exchanges.list_exchanges()
+        active = reg.get("active")
+        ready = [e["name"] for e in reg.get("exchanges", [])
+                 if e.get("enabled", True) and (e.get("credentials") or {}).get("ready")]
+        if active in ready:
+            return active
+        if ready:
+            return ready[0]
+        return active or "kraken"
+    except Exception:
+        return "kraken"
+
+
 def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180, channels=None, merge_daytrade=False, out=None, latest=True) -> dict:
-    if exchange is None:
-        try:
-            import exchanges
-            exchange = exchanges.active_exchange()["name"]
-        except Exception:
-            exchange = "kraken"
+    exchange = _resolve_exchange(exchange)
     RAW = RAW_OUT.with_name(f"signal_raw_{str(pair).replace('/', '-').upper()}.json")
     cmd = [_node(), str(SIDECAR), "--pair", pair, "--strategy", strategy,
            "--exchange", exchange, "--out", str(RAW)]
@@ -294,6 +311,8 @@ def normalize(raw: dict, meta: dict) -> dict:
         "exchange": meta.get("exchange"),
         "strategy": meta.get("strategy"),
         "run_ms": meta.get("ms"),
+        "exchange": (meta or {}).get("exchange"),
+        "strategy": (meta or {}).get("strategy"),
         "channels": channels,
         "grids": {k: {"floor": (v or {}).get("floor"), "low": (v or {}).get("low"),
                       "high": (v or {}).get("high"), "roof": (v or {}).get("roof")}
