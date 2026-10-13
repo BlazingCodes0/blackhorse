@@ -1,23 +1,33 @@
-"""BlackHorse desktop app — PySide6. Skin defense is the first working sidebar page."""
+"""BlackHorse desktop app — PyQt6. One window over the trading loop and host defense."""
 import sys, os, subprocess, threading, time, json
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-sys.path.insert(0, str(Path.home() / "blackhorse" / "skin"))
+
+# the repo root and its importable sub-packages, set up once (this used to be
+# scattered through the file in several places).
+BH = Path.home() / "blackhorse"
+for _sub in ("trade", "memory", "skin", "app"):
+    _p = str(BH / _sub)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+del _sub, _p
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit,
-                               QPushButton, QLabel, QTextEdit, QListWidget, QListWidgetItem,
+                               QPushButton, QLabel, QTextEdit, QListWidget, QListWidgetItem, QFrame,
                                QSystemTrayIcon, QMenu, QDialog, QFormLayout, QComboBox, QDialogButtonBox)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QAction, QIcon
-sys.path.insert(0, str(Path.home() / "blackhorse" / "skin"))
-sys.path.insert(0, str(Path.home() / "blackhorse" / "app"))
 from agents_ui import AgentsMixin
 import settings as _settings_mod
+try:
+    import psutil              # optional — used only by the OFF verification
+except Exception:
+    psutil = None
 settings = _settings_mod
 
-LOG = Path.home() / "blackhorse" / "logs" / "threats.jsonl"
-LOCKDOWN_FLAG = Path.home() / "blackhorse" / "config" / "LOCKDOWN"
+LOG = BH / "logs" / "threats.jsonl"
+LOCKDOWN_FLAG = BH / "config" / "LOCKDOWN"
 
 def _n(v, dp=4):
     """compact number print — '?' for missing"""
@@ -96,7 +106,7 @@ class BlackHorse(AgentsMixin, QMainWindow):
         title.setStyleSheet("color:#6b7280")
         side.addWidget(title)
         self.nav = QListWidget(); self.nav.setObjectName("nav")
-        for page in ["Dashboard", "Skin (Defense)", "Trade (Exchange)", "Agents", "Heart (Filter)", "Console", "Stories", "Motar (Agents)"]:
+        for page in ["Dashboard", "Skin (Defense)", "Trade (Exchange)", "Agents", "Heart (Filter)", "Console", "Stories"]:
             self.nav.addItem(QListWidgetItem(page))
         self.nav.setMaximumWidth(180)
         self.nav.currentRowChanged.connect(self.switch_page)
@@ -116,7 +126,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
         cl.addWidget(self._build_heart())
         cl.addWidget(self._build_console())
         cl.addWidget(self._build_stories())
-        cl.addWidget(self._build_placeholder("Motar (Agents)", "Agent workers — coming soon."))
         lay.addWidget(content)
         self.nav.setCurrentRow(1)
 
@@ -256,72 +265,98 @@ class BlackHorse(AgentsMixin, QMainWindow):
                               QSystemTrayIcon.MessageIcon.Information, 3000)
 
     def _build_dashboard(self):
-        w = QWidget(); v = QVBoxLayout(w)
-        v.addWidget(QLabel("Dashboard — system overview / OFF verification"))
-        self.dash_pnl = QLabel("TOTAL P&L  —")
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(16, 14, 16, 14)
+        v.setSpacing(12)
+
+        # header: title + the one action
+        head = QHBoxLayout()
+        titles = QVBoxLayout(); titles.setSpacing(0)
+        t = QLabel("Dashboard")
+        t.setStyleSheet("font-size:20px;font-weight:bold;color:#e5e7eb;")
+        sub = QLabel("system overview \u00b7 OFF verification")
+        sub.setStyleSheet("color:#9ca3af;font-size:12px;")
+        titles.addWidget(t); titles.addWidget(sub)
+        head.addLayout(titles); head.addStretch(1)
+        self.btn_verify = QPushButton("Verify OFF now")
+        self.btn_verify.setMinimumHeight(34)
+        self.btn_verify.clicked.connect(self.verify_off)
+        head.addWidget(self.btn_verify, 0, Qt.AlignmentFlag.AlignTop)
+        v.addLayout(head)
+
+        def card(title):
+            box = QFrame(); box.setObjectName("card")
+            lay = QVBoxLayout(box)
+            lay.setContentsMargins(16, 12, 16, 12); lay.setSpacing(6)
+            cap = QLabel(title)
+            cap.setStyleSheet("color:#9ca3af;font-size:11px;letter-spacing:1px;")
+            lay.addWidget(cap)
+            return box, lay
+
+        pnl_card, pc = card("TOTAL P&L")
+        self.dash_pnl = QLabel("\u2014")
         self.dash_pnl.setFont(QFont("Monospace", 16))
         self.dash_pnl.setWordWrap(True)
-        v.addWidget(self.dash_pnl)
+        pc.addWidget(self.dash_pnl)
         self.dash_pnl_desc = QLabel("")
         self.dash_pnl_desc.setFont(QFont("Monospace", 9))
         self.dash_pnl_desc.setWordWrap(True)
         self.dash_pnl_desc.setStyleSheet("color:#9aa0a6")
-        v.addWidget(self.dash_pnl_desc)
-        self.dash_trade = QLabel("trade state: —")
+        pc.addWidget(self.dash_pnl_desc)
+        v.addWidget(pnl_card)
+
+        trade_card, tc = card("TRADE STATE")
+        self.dash_trade = QLabel("\u2014")
         self.dash_trade.setFont(QFont("Monospace", 9))
         self.dash_trade.setWordWrap(True)
-        v.addWidget(self.dash_trade)
-        self.dash_status = QLabel("checking…")
+        tc.addWidget(self.dash_trade)
+        v.addWidget(trade_card)
+
+        status_card, sc = card("OFF VERIFICATION")
+        self.dash_status = QLabel("checking\u2026")
         self.dash_status.setFont(QFont("Monospace", 10))
         self.dash_status.setWordWrap(True)
-        v.addWidget(self.dash_status)
-        row = QHBoxLayout()
-        b_verify = QPushButton("Verify OFF now"); b_verify.clicked.connect(self.verify_off)
-        row.addWidget(b_verify)
-        v.addLayout(row)
+        sc.addWidget(self.dash_status)
+        v.addWidget(status_card)
+
         v.addStretch(1)
         self.pages[0] = w; w.hide(); return w
 
     def refresh_dashboard(self):
-        import json, pathlib
-        bh = pathlib.Path.home()/"blackhorse"
         try:                                   # total P&L, pretty, attributed per agent
-            import sys
-            for p in (str(bh/"trade"), str(bh/"memory")):
-                if p not in sys.path:
-                    sys.path.insert(0, p)
             import portfolio
             pnl = portfolio.pnl_by_agent()
             tot = pnl["total"]
             self.dash_pnl.setText(
-                f"TOTAL P&L   {'+' if tot >= 0 else '-'}${abs(tot):.4f}   "
-                f"(realized {pnl['realized']:+.4f}  ·  unrealized {pnl['unrealized']:+.4f})")
+                f"{'+' if tot >= 0 else '-'}${abs(tot):.4f}   "
+                f"(realized {pnl['realized']:+.4f}  \u00b7  unrealized {pnl['unrealized']:+.4f})")
             self.dash_pnl.setStyleSheet(f"color:{'#22c55e' if tot >= 0 else '#ef4444'}")
             rows = sorted(pnl["agents"].items(), key=lambda kv: kv[1]["total"], reverse=True)
-            desc = [f"{a}: {v['total']:+.4f}  (real {v['realized']:+.4f} · unreal "
-                    f"{v['unrealized']:+.4f} · {v['closed']} closed / {v['open']} open)"
-                    for a, v in rows] or ["no positions yet — every agent at 0.0000"]
-            self.dash_pnl_desc.setText("each agent's contribution — " + "\n".join(desc))
+            desc = [f"{a}: {v['total']:+.4f}  (real {v['realized']:+.4f} \u00b7 unreal "
+                    f"{v['unrealized']:+.4f} \u00b7 {v['closed']} closed / {v['open']} open)"
+                    for a, v in rows] or ["no positions yet \u2014 every agent at 0.0000"]
+            self.dash_pnl_desc.setText("each agent's contribution \u2014 " + "\n".join(desc))
             self.dash_pnl.setToolTip("Contribution to total P&L by agent:\n" + "\n".join(desc))
         except Exception as e:
-            self.dash_pnl.setText("TOTAL P&L  —")
+            self.dash_pnl.setText("\u2014")
             self.dash_pnl_desc.setText(f"P&L unavailable: {e}")
         try:
-            s = json.loads((bh/"logs"/"loop_state.json").read_text())
+            s = json.loads((BH/"logs"/"loop_state.json").read_text())
             if hasattr(self, 'loop_status'):
                 self.loop_status.setText("loop RUNNING (backend night-shift)" if s.get('heartbeat')=='ok' else "loop HALTED (backend no heartbeat)")
-            sig_path = bh/"logs"/"signal_latest.json"
+            sig_path = BH/"logs"/"signal_latest.json"
             sig = json.loads(sig_path.read_text()) if sig_path.exists() else {}
             ch = sig.get("channels", {})
             ripple = ch.get("ripple", {})
             tide = ch.get("tide", {})
             lines = [
-              f"loop: {'ok' if s.get('heartbeat')=='ok' else 'halted'} · interval {s.get('ts','?')[11:16]} · decision {s.get('decision')} — {s.get('reason')}",
-              f"bot signal: {sig.get('pair','?')} @ {ripple.get('currPrice')} · 60m str {ripple.get('strength')} · trend {ripple.get('trendState')} · signal {ripple.get('rangeSignal')}",
-              f"tide(1440m): trend {tide.get('trendState')} · rangeSignal {tide.get('rangeSignal')} · buy ticking at {tide.get('advisor',{}).get('buy')}",
+              f"loop: {'ok' if s.get('heartbeat')=='ok' else 'halted'} \u00b7 interval {s.get('ts','?')[11:16]} \u00b7 decision {s.get('decision')} \u2014 {s.get('reason')}",
+              f"bot signal: {sig.get('pair','?')} @ {ripple.get('currPrice')} \u00b7 60m str {ripple.get('strength')} \u00b7 trend {ripple.get('trendState')} \u00b7 signal {ripple.get('rangeSignal')}",
+              f"tide(1440m): trend {tide.get('trendState')} \u00b7 rangeSignal {tide.get('rangeSignal')} \u00b7 buy ticking at {tide.get('advisor',{}).get('buy')}",
               f"marks: {[m.get('closed') if isinstance(m,dict) else m for m in s.get('marks',[])]}",
             ]
-            hb = (bh/"logs"/"heart_orders.json")
+            hb = BH/"logs"/"heart_orders.json"
             if hb.exists():
                 try:
                     orders = json.loads(hb.read_text())
@@ -332,7 +367,7 @@ class BlackHorse(AgentsMixin, QMainWindow):
                 lines.append("orders logged: 0")
             self.dash_trade.setText("\n".join(lines))
         except Exception as e:
-            self.dash_trade.setText(f"trade state: {e}")
+            self.dash_trade.setText(f"unavailable: {e}")
 
     def verify_off(self):
         """Prove, from the things that actually run, that nothing is active.
@@ -353,17 +388,19 @@ class BlackHorse(AgentsMixin, QMainWindow):
         st = self._systemctl("is-active", "blackhorse-defense.service").stdout.strip() or "not set up"
         lines.append(f"defense service          : {st}")
         # stray worker processes
-        try:
-            import psutil
-            stray = []
-            for p in psutil.process_iter(["pid", "cmdline"]):
-                c = " ".join(p.info.get("cmdline") or [])
-                if ("blackhorse" in c and any(k in c for k in ("defense.py", "whitecells.py", "brain.py", "mastermind.py"))
-                        and "main.py" not in c):
-                    stray.append(f"pid {p.info['pid']}")
-            lines.append(f"stray defense workers    : {', '.join(stray) if stray else 'none'}")
-        except Exception as e:
-            lines.append(f"stray defense workers    : (psutil unavailable: {e})")
+        if psutil is None:
+            lines.append("stray defense workers    : (psutil unavailable)")
+        else:
+            try:
+                stray = []
+                for p in psutil.process_iter(["pid", "cmdline"]):
+                    c = " ".join(p.info.get("cmdline") or [])
+                    if ("blackhorse" in c and any(k in c for k in ("defense.py", "whitecells.py", "brain.py", "mastermind.py"))
+                            and "main.py" not in c):
+                        stray.append(f"pid {p.info['pid']}")
+                lines.append(f"stray defense workers    : {', '.join(stray) if stray else 'none'}")
+            except Exception as e:
+                lines.append(f"stray defense workers    : (psutil unavailable: {e})")
         lines.append(f"stale LOCKDOWN flag      : {'present' if LOCKDOWN_FLAG.exists() else 'absent'}")
 
         if master:
@@ -404,10 +441,6 @@ class BlackHorse(AgentsMixin, QMainWindow):
                         capture_output=True, text=True, timeout=180)
             (Path.home()/"blackhorse"/"logs"/"edge_rules_run.log").write_text((r.stdout or "") + "\n=== STDERR ===\n" + (r.stderr or ""))
         threading.Thread(target=_work, daemon=True).start()
-
-    def _build_placeholder(self, name, msg):
-        w = QWidget(); v = QVBoxLayout(w); v.addWidget(QLabel(msg))
-        self.pages[len(self.pages)] = w; w.hide(); return w
 
     # ================= TRADE (exchange + autonomous) =================
     def _trade_mod(self):
@@ -1719,6 +1752,8 @@ if __name__ == "__main__":
             QListWidget#nav { background:transparent; border:none; color:#cbd5e1; font-size:13px; }
             QListWidget#nav::item { padding:10px 8px; border-radius:8px; margin:2px 6px; }
             QListWidget#nav::item:selected { background:#065f46; color:white; }
+            QFrame#card { background:#111c33; border:1px solid #1e293b; border-radius:12px; }
+            QFrame#card QLabel { border:none; background:transparent; }
         """)
     except ImportError:
         pass

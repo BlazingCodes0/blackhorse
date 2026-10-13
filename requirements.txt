@@ -1,0 +1,13 @@
+# BlackHorse — Python dependencies
+#
+# Core (the desktop app and the trading loop):
+PyQt6>=6.5
+psutil>=5.9
+
+# Optional — features degrade gracefully when these are absent:
+#   encrypted secret vault (trade/vault.py)
+cryptography>=41
+#   image tools (trade/tools.py, plugins/imagemagick.py)
+Pillow>=10
+#   dashboard theming (app/main.py)
+qdarkstyle>=3.2

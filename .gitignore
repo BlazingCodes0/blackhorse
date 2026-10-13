@@ -1,9 +1,16 @@
 __pycache__/
 *.pyc
+*.bak
+*.bak.*
+.venv/
+venv/
+.idea/
+.vscode/
 logs/
 config/LOCKDOWN
 config/blocked_ips.txt
 docs/*.png
+.git.broken/
 
 # BlackHorse secret vault — never commit
 config/exchange_keys.json

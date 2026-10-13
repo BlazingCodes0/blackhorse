@@ -1,1 +1,0 @@
-gui: per-agent policy editor on its own tab (channels/entry/exit/RR/stop/risk/maxpos saved via agents.set_override)
