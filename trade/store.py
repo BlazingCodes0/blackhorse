@@ -33,7 +33,7 @@ def connect() -> sqlite3.Connection:
     con = sqlite3.connect(str(DB), timeout=30)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("PRAGMA synchronous=FULL")
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA cache_size=-2000")     # ~2 MB
     con.execute("PRAGMA temp_store=FILE")
@@ -433,6 +433,14 @@ def record_decision_changed(source, action, pair=None, agent=None, min_gap_s=360
                 and _now() - last["ts"] < min_gap_s:
             return None
     return record_decision(source, action, pair=pair, agent=agent, **kw)
+
+
+def checkpoint() -> dict:
+    """Flush the trading WAL back into the main file so a poweroff can't strand
+    it. Safe to call with nothing pending."""
+    con = connect()
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return {"db": str(DB), "db_bytes": DB.stat().st_size if DB.exists() else 0}
 
 
 def prune(hold_days: int = 14) -> dict:

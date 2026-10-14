@@ -13,12 +13,16 @@ Each cycle:
 
 Fail-closed: if Heart blocks or anything throws, nothing moves.
 
+Shutdown: SIGTERM (systemd stop / OS poweroff) or SIGINT journals what was open
+to logs/shutdown.json and checkpoints both SQLite DBs. Resting orders are left
+in place (venues own them) — shutdown never moves money.
+
 CLI:
   python3 trade/loop.py --once
   python3 trade/loop.py --interval 300          # run every 5 min
   python3 trade/loop.py --once --no-signal      # skip the slow SignalBot step
 """
-import json, sys, time, argparse
+import json, sys, time, argparse, os, signal
 from pathlib import Path
 
 BH = Path.home() / "blackhorse"
@@ -27,6 +31,62 @@ sys.path.insert(0, str(BH / "memory"))
 STATE = BH / "logs" / "loop_state.json"
 SIGNAL = BH / "logs" / "signal_latest.json"
 SETUP = BH / "config" / "signal_setup.json"
+SHUTDOWN = BH / "logs" / "shutdown.json"
+
+_STOP = False
+
+
+class _Shutdown(Exception):
+    """Raised by the signal handler to unwind the loop cleanly."""
+    pass
+
+
+def _handle_signal(signum, _frame):
+    global _STOP
+    if _STOP:                       # a second signal = the owner means force-quit
+        raise KeyboardInterrupt
+    _STOP = True
+    raise _Shutdown(signal.Signals(signum).name)
+
+
+def _install_signals():
+    """Catch SIGTERM (systemd stop / OS shutdown) + SIGINT (Ctrl-C) so we can
+    checkpoint the DBs instead of dying mid-write. No-op off the main thread."""
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handle_signal)
+        except (ValueError, OSError):
+            pass
+
+
+def _journal_shutdown(reason: str) -> dict:
+    """On the way down: record what was open, then checkpoint both SQLite DBs so
+    a poweroff can't strand a WAL. Resting orders are LEFT in place (venues own
+    them server-side) — shutdown never moves money."""
+    rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "pid": os.getpid(), "reason": reason}
+    try:
+        import store
+        rec["open_orders"] = len(store.open_orders())
+        rec["open_positions"] = len(store.open_positions())
+    except Exception as e:
+        rec["store"] = f"error: {e}"
+    # journal into memory FIRST, then checkpoint — a checkpoint must be the last
+    # thing that touches each DB or the WAL reopens right after we truncate it.
+    try:
+        import index
+        index.remember(kind="decision", text=f"loop shutdown: {reason}", meta=rec, source="loop")
+    except Exception:
+        pass
+    ck = {}
+    for name, mod in (("trading", "store"), ("memory", "index")):
+        try:
+            ck[name] = __import__(mod).checkpoint()
+        except Exception as e:
+            ck[name] = f"error: {e}"
+    rec["checkpoints"] = ck
+    _save(SHUTDOWN, rec)
+    return rec
 
 
 def _setup() -> dict:
@@ -220,6 +280,13 @@ def sweep(refresh_signal=True, ask_brain=True, pair=None, cfg=None, pairs=None) 
             _save(pf, {"ts": time.time(), **store.prune()})
     except Exception:
         pass
+    try:                                   # once a day: enforce memory TTL + per-kind row caps
+        import index
+        mc = BH / "logs" / "mem_cleanup.json"
+        if time.time() - _load(mc, {}).get("ts", 0) > 86400:
+            _save(mc, {"ts": time.time(), **index.cleanup(apply=True, sqlite_only=True)})
+    except Exception:
+        pass
     try:
         import store
         v = store.verify_against_portfolio()
@@ -268,27 +335,40 @@ def cycle(refresh_signal=True, ask_brain=True, pair=None, cfg=None) -> dict:
 
 
 def daemon(interval=300, **kw):
+    _install_signals()
     print(f"BlackHorse loop awake — every {interval}s")
-    while True:
-        try:
-            rec = sweep(**kw)
-            print(json.dumps(rec))
-        except Exception as e:
-            print("loop error:", e)
-        # sleep in short steps: while any LIVE position is open, watch bid/ask for the exit
-        end = time.time() + max(30, interval)
-        while time.time() < end:
+    reason = "clean exit"
+    try:
+        while not _STOP:
             try:
-                import portfolio, exits
-                if any(p.get("mode") == "LIVE" and not p.get("exit_txid") for p in portfolio.open_positions()):
-                    for ev in exits.manage():
-                        print(json.dumps({"exit": ev}))
-                    time.sleep(max(5, int(exits._cfg().get("exit_poll_seconds", 15))))
-                else:
-                    time.sleep(min(30, max(1, end - time.time())))
+                rec = sweep(**kw)
+                print(json.dumps(rec))
+            except _Shutdown:
+                raise
             except Exception as e:
-                print("exit watch error:", e)
-                time.sleep(15)
+                print("loop error:", e)
+            # sleep in short steps: while any LIVE position is open, watch bid/ask for the exit
+            end = time.time() + max(30, interval)
+            while time.time() < end and not _STOP:
+                try:
+                    import portfolio, exits
+                    if any(p.get("mode") == "LIVE" and not p.get("exit_txid") for p in portfolio.open_positions()):
+                        for ev in exits.manage():
+                            print(json.dumps({"exit": ev}))
+                        time.sleep(max(5, int(exits._cfg().get("exit_poll_seconds", 15))))
+                    else:
+                        time.sleep(min(30, max(1, end - time.time())))
+                except _Shutdown:
+                    raise
+                except Exception as e:
+                    print("exit watch error:", e)
+                    time.sleep(15)
+    except _Shutdown as e:
+        reason = f"signal:{e}"
+    except KeyboardInterrupt:
+        reason = "keyboard interrupt"
+    finally:
+        print(json.dumps({"shutdown": _journal_shutdown(reason)}))
 
 
 def night_shift(pairs=None, interval=300, hours=8, ask_brain=True) -> dict:
@@ -299,6 +379,7 @@ def night_shift(pairs=None, interval=300, hours=8, ask_brain=True) -> dict:
     cannot exceed caps, cannot go live unless mode=LIVE in config/trading.json,
     and stops on any hard error. It is a scheduler, not a new authority.
     """
+    _install_signals()
     if pairs is None:
         try:
             import execute as _ex
@@ -308,20 +389,34 @@ def night_shift(pairs=None, interval=300, hours=8, ask_brain=True) -> dict:
     pairs = pairs or ["DOT/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD"]
     end = time.time() + hours * 3600
     journal = []
+    reason = "completed"
     print(f"BlackHorse NIGHT SHIFT — {len(pairs)} pairs, every {interval}s, up to {hours}h")
-    while time.time() < end:
-        for pair in pairs:
-            try:
-                rec = cycle(ask_brain=ask_brain, pair=pair)
-                rec["pair"] = pair
-                journal.append(rec)
-                print(json.dumps({"pair": pair, "decision": rec.get("decision"),
-                                  "executed": rec.get("executed"), "ts": rec.get("ts")}))
-            except Exception as e:
-                journal.append({"pair": pair, "error": str(e)})
-        _save(BH / "logs" / "night_journal.json", {"started": end - hours * 3600,
-                                                   "cycles": journal[-200:]})
-        time.sleep(max(30, interval))
+    try:
+        while time.time() < end and not _STOP:
+            for pair in pairs:
+                if _STOP:
+                    break
+                try:
+                    rec = cycle(ask_brain=ask_brain, pair=pair)
+                    rec["pair"] = pair
+                    journal.append(rec)
+                    print(json.dumps({"pair": pair, "decision": rec.get("decision"),
+                                      "executed": rec.get("executed"), "ts": rec.get("ts")}))
+                except _Shutdown:
+                    raise
+                except Exception as e:
+                    journal.append({"pair": pair, "error": str(e)})
+            _save(BH / "logs" / "night_journal.json", {"started": end - hours * 3600,
+                                                       "cycles": journal[-200:]})
+            sleep_end = time.time() + max(30, interval)
+            while time.time() < sleep_end and not _STOP:
+                time.sleep(min(5, max(0.2, sleep_end - time.time())))
+    except _Shutdown as e:
+        reason = f"signal:{e}"
+    except KeyboardInterrupt:
+        reason = "keyboard interrupt"
+    finally:
+        _journal_shutdown(reason)
 
     brief = _morning_brief(journal)
     _save(BH / "logs" / "morning_brief.json", brief)
