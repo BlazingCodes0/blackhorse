@@ -29,5 +29,11 @@
   "exit_min_net_pct": 0.25,
   "exit_poll_seconds": 15,
   "exit_order_type": "limit",
-  "exit_requote_seconds": 20
+  "exit_requote_seconds": 20,
+  "comment3": "OPT-IN STOP LOSS (per agent, GUI Settings -> Stop loss). Default OFF keeps the house rule: never sell at a loss. When ON, exits.py rests a maker LIMIT as price nears the stop (never a market dump). stop_mode: price_watch (fixed level) | trailing (level rides up with price). stop_loss_pct = flat stop %, null = use the decider's structural pos[stop]. trail_pct = trailing distance as % of ENTRY, null = the initial stop distance. watch_pct = how near (%) before the limit is armed.",
+  "stop_loss_enabled": false,
+  "stop_mode": "price_watch",
+  "stop_loss_pct": null,
+  "trail_pct": null,
+  "watch_pct": 0.5
 }

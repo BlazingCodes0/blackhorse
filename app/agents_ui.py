@@ -193,12 +193,31 @@ SETTINGS = [
         ("min_reward_risk", "Min R:R", "float", "policy", "Target distance vs invalidation distance."),
         ("risk_per_trade_pct", "Risk % of capital", "float", "policy", "Used for sizing (fees included)."),
         ("max_position_pct", "Max position %", "float", "policy", "Largest single position as % of capital."),
-        ("stop_max_pct", "Sizing stop % ≤", "float", "policy", "Sizing reference only — NO stop orders are placed."),
+        ("stop_max_pct", "Sizing stop % ≤", "float", "policy",
+         "Caps how far the structural stop sits from entry. Used only if you enable stop loss."),
     ]),
-    ("Exit (sell) — no stops", [
+    ("Exit (sell) — profit exit", [
         ("exit_strength_min", "Sell zone strength ≥", "float", "policy", "Strategy 'sell time' band."),
         ("exit_min_net_pct", "Min net profit %", "float", "policy", "After entry fee paid + taker exit fee."),
         ("exit_price_sets", "Stored price sets", "list", "policy", "average, perfected, median, sweet."),
+    ]),
+    ("Stop loss (opt-in — can sell at a loss)", [
+        ("stop_loss_enabled", "Enable stop loss", "bool", "policy",
+         "OFF = the house rule: never sell at a loss, only wait for a profitable exit. "
+         "ON = arm a protective stop (a maker limit, never a market dump)."),
+    ]),
+    ("Stop loss — settings (used when enabled)", [
+        ("stop_mode", "Stop mode", "combo:price_watch,trailing", "policy",
+         "price_watch = rest a limit when price nears the stop level. "
+         "trailing = the level rides up with price (distance below the high)."),
+        ("stop_loss_pct", "Flat stop % (blank = structural)", "float", "policy",
+         "Optional flat loss %. Overrides the structural stop when set; blank keeps the "
+         "decider's structural pos[stop]."),
+        ("trail_pct", "Trail distance % (of entry)", "float", "policy",
+         "Trailing mode: how far below the high the stop rides, as % of entry. "
+         "Blank = use the initial stop distance. Never looser than the structural stop."),
+        ("watch_pct", "Watch band % (of stop)", "float", "policy",
+         "Arm the resting limit when price comes within this % of the stop level. Default 0.5."),
     ]),
 ]
 
@@ -458,6 +477,11 @@ class AgentsMixin:
                 ("Entry order", f"{pol.get('entry_order_type', 'limit')} (expires {pol.get('entry_expiry_seconds', '-')}s)"),
                 ("Sell zone strength ≥", pol.get("exit_strength_min")),
                 ("Min net profit to sell", f"{pol.get('exit_min_net_pct', '-')}%  · stored sets: {', '.join(pol.get('exit_price_sets') or [])}"),
+                ("Stop loss",
+                 ("<b style='color:%s'>ON</b> — %s" % (AMBER, pol.get("stop_mode", "price_watch")))
+                 + (" · flat %s%%" % pol.get("stop_loss_pct") if pol.get("stop_loss_pct") else " · structural stop")
+                 if pol.get("stop_loss_enabled")
+                 else "OFF — profit exits only"),
                 ("Risk / max position", f"{pol.get('risk_per_trade_pct')}% / {pol.get('max_position_pct')}%"),
                 ("Min R:R", pol.get("min_reward_risk")),
                 ("Last decision", last)]
@@ -465,10 +489,13 @@ class AgentsMixin:
                        f"<td style='padding:3px 0'>{v}</td></tr>" for k, v in rows)
         desc = ("intervals are the profiles — the entry lane trades, the climb rungs each confirm first."
                 if a.get("kind") == "trading" else "")
+        foot = ("Stop loss is ON — a protective %s stop rests a maker limit near the level." % pol.get("stop_mode", "price_watch")
+                if pol.get("stop_loss_enabled")
+                else "No stop orders: positions only sell at a net profit after fees (enable Stop loss to change this).")
         self.ag_overview.setHtml(
             f"<h2 style='margin-bottom:2px'>{a.get('name')} <span style='color:{GREY};font-size:13px'>"
             f"{a['id']}</span></h2><p style='color:{GREY}'>{desc}</p><table>{body}</table>"
-            f"<p style='color:{GREY};font-size:11px'>No stop orders: positions only sell at a net profit after fees.</p>")
+            f"<p style='color:{GREY};font-size:11px'>{foot}</p>")
 
     def _budget_html(self, agent_id):
         r = getattr(self, "_agent_audit", {}).get(agent_id)
@@ -753,7 +780,14 @@ class AgentsMixin:
                         if key == 'pairs': val = [x.upper() for x in val]
                         same = val == (old or [])
                     elif kind == 'float':
-                        if raw == '': continue
+                        if raw == '':
+                            if key in ('stop_loss_pct', 'trail_pct'):
+                                if old is None:
+                                    continue
+                                agents.set_override(aid, key, None)   # blank = back to structural/default
+                                changed.append(key)
+                                continue
+                            continue
                         val = float(raw); same = old is not None and float(old) == val
                     elif kind == 'int':
                         if raw == '': continue
@@ -808,6 +842,9 @@ class AgentsMixin:
             net = w.get("net_pct_if_sold_at_bid")
             nxt = f"{cands[0]['price']} ({cands[0]['interval']})" if cands else "none pass"
             state = ("SELLING" if p.get("exit_txid") else ("WATCH" if w else "no data"))
+            sw = w.get("stop") or {}
+            if sw.get("enabled"):
+                state += f" · stop:{sw.get('action', '?')}"
             rows.append([p["pair"], _px(p["qty"], 6), _px(p["entry"]), _px(w.get("bid")),
                          "—" if net is None else f"{net:+.2f}%", _px(w.get("breakeven_price")),
                          _px(w.get("min_profit_price")), nxt, state])
@@ -860,6 +897,18 @@ class AgentsMixin:
         tbl += "</table>"
         if not cand:
             tbl = f"<i style='color:{GREY}'>no stored sell prices yet</i>"
-        tail = (f"<p style='color:{GREY}'>Sells when bid ≥ the lowest PASSING stored price, or when a strategy channel is in its "
-                f"sell zone and the bid itself is profitable. Never at a loss, never on a stop.</p>")
+        sw = w.get("stop") or {}
+        if sw.get("enabled"):
+            where = {"ARM": "armed", "armed": "armed", "held": "held", "watching": "watching",
+                     "withdrawn": "withdrawn", "no-stop": "no stop level"}.get(sw.get("action"), sw.get("action", "—"))
+            trail = (f" · trail high {_px(sw.get('trail_high'))} @ {sw.get('trail_pct')}% of entry"
+                     if sw.get("mode") == "trailing" else "")
+            tail = (f"<p style='color:{AMBER}'>Stop loss <b>{sw.get('mode')}</b>: level "
+                    f"<b>{_px(sw.get('level'))}</b> (stop {_px(sw.get('stop'))} · {sw.get('stop_src')}), "
+                    f"arm band {_px(sw.get('arm_level'))} ({sw.get('watch_pct')}%){trail} — "
+                    f"<b>{'TRIGGERED' if sw.get('triggered') else ('near' if sw.get('near') else 'watching')}</b> "
+                    f"({where}). Rests a maker limit; a profitable strategy exit cancels it and takes the profit.</p>")
+        else:
+            tail = (f"<p style='color:{GREY}'>Sells when bid ≥ the lowest PASSING stored price, or when a strategy channel is in its "
+                    f"sell zone and the bid itself is profitable. No stop armed.</p>")
         self.pos_detail.setHtml("<br>".join(lines) + "<br>" + tbl + tail)
