@@ -5,6 +5,9 @@ Left: agent list. Right: tabs per agent —
   Settings  labelled inputs grouped (where it trades / entry / exit), two columns
   Orders    working limit orders, open positions with live bid/net + exit detail,
             recent exchange orders (DB), closed trades
+  Decisions why it is (or isn't) entering — the gate checklist the trader produced,
+            the decisions it is making, where the market is (SignalBot read), and
+            the bot's own six scenarios marked with which one each interval sits in now
 Everything on the right scrolls instead of squishing, and the split is draggable.
 """
 import json, time, sqlite3
@@ -222,6 +225,348 @@ SETTINGS = [
 ]
 
 
+# ------------------------------------------------------------------ decisions tab
+# The bot's own six-scenario rubric, verbatim — the same lines the SignalBot
+# itself applied (they lived in app/main.py's scenario panel and are kept alive
+# in Mr.Fluffy's wiregate). The detector below is a faithful port of
+# trade/signalbot.py::_setup_scenario: the SAME rubric, read live from the bot's
+# own written channel fields. Labels only — it never gates and never trades.
+SCENARIO_RUBRIC = [
+    {"n": "1", "title": "RSI washout, price holds above low",
+     "why": "RSI oversold but the score gate is still failing — wait for buyScore ≥ 0.60 to hold; "
+            "that's the knife having stopped falling."},
+    {"n": "2", "title": "RSI ≤ 35 but spread still weakening",
+     "why": "RSI is oversold but the spread is still weakening — a falling knife, the gate is right "
+            "to refuse. Wait for the spread to stop falling."},
+    {"n": "3", "title": "SpreadMA flips bullish, trend turns up, price above low",
+     "why": "The green light — spreadMA bullish + trend up. If it drifted off, patient again."},
+    {"n": "4", "title": "Price slices through low/floor",
+     "why": "The floor broke and the range invalidated — a floor that won't hold isn't a floor. "
+            "No buy, no edge."},
+    {"n": "5", "title": "15m strength ≈ 0 while 240m strength rising",
+     "why": "15m strength is asleep at ~0 — zero isn't a buy signal, it's the tape holding its "
+            "breath. Wait for 15m rising off 0 + RSI ≤ 35 before any fill."},
+    {"n": "6", "title": "60m/240m scores nearly threshold-broken, 15m weak",
+     "why": "Wait for the 15m up-tick — the higher lanes are nearly there, but the trigger lane "
+            "stays 15m."},
+]
+
+
+def _num(v, dp=4):
+    try:
+        return f"{float(v):.{dp}f}"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def _iso_ago(ts):
+    """ISO ts ('2026-10-14T22:35:48Z') -> '3m ago'. For the bot snapshot's ts."""
+    import calendar
+    try:
+        ep = calendar.timegm(time.strptime(str(ts), "%Y-%m-%dT%H:%M:%SZ"))
+        return _ago(ep)
+    except Exception:
+        return "?"
+
+
+def _scenario_label(c):
+    """Which of the six the bot's own fields currently sit in (label only).
+    Faithful port of trade/signalbot.py::_setup_scenario."""
+    try:
+        r = c.get("RSI") or {}
+        mr = c.get("marketResult") or {}
+        sm = c.get("spreadMA") or {}
+        price = c.get("currPrice"); low = c.get("low")
+        buy_score = c.get("buyScore") or 0
+        rsi = r.get("currentRSI"); rsi = 99 if rsi is None else rsi
+        against = str(mr.get("spreadDirection") or "").lower() in ("weakening", "down")
+        if price is not None and low is not None and price < low:
+            return "4"
+        if sm.get("signal") == "bullish" and mr.get("trendState") in ("up", "bull", "rising") \
+                and price and low and price >= low:
+            return "3"
+        if rsi <= 35 and not against and buy_score >= 0.60:
+            return "1"
+        if rsi <= 35 and against:
+            return "2"
+        strg = c.get("strength") or 0
+        if strg < 0.10 and buy_score >= 0.85:
+            return "5/6"
+        if (c.get("rangeSignal") or "") == "BUY" and strg < 0.15:
+            return "5"
+        return "none"
+    except Exception:
+        pass
+    sc = str(c.get("setupScenario") or "none")
+    return sc.split(":", 1)[0].strip() or "none"
+
+
+def load_agent_decisions(agent_id, limit=25):
+    """This agent's decisions, newest first, with the detail JSON unpacked
+    (explain = the gate checklist the trader produced; skipped; order_type)."""
+    rows = _db("SELECT ts, source, action, pair, channel, entry, stop, target, size_quote, rr, reason, detail "
+               "FROM decisions WHERE agent=? ORDER BY ts DESC LIMIT ?", (agent_id, limit))
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            det = json.loads(d.get("detail") or "{}")
+        except (TypeError, ValueError):
+            det = {}
+        if not isinstance(det, dict):
+            det = {}
+        d["explain"] = det.get("explain") or []
+        d["skipped"] = det.get("skipped")
+        d["order_type"] = det.get("order_type")
+        d["outlay_quote"] = det.get("outlay_quote")
+        out.append(d)
+    return out
+
+
+def load_signal(pair=None):
+    """The bot's written snapshot for a pair (logs/signals/<PAIR>.json), else the
+    primary snapshot (logs/signal_latest.json). Never runs the bot."""
+    if pair:
+        s = _jload(BH / "logs" / "signals" / (str(pair).replace("/", "-").upper() + ".json"), {})
+        if s:
+            return s
+    return _jload(BH / "logs" / "signal_latest.json", {})
+
+
+def _signal_channels(sig):
+    """Ordered, interval-deduped channels from a snapshot."""
+    chans = (sig or {}).get("channels") or {}
+    order = ["ripple", "wave", "tide", "wave15", "ripple5", "tide60"]
+    names = [n for n in order if n in chans] + [n for n in chans if n not in order]
+    seen, out = set(), []
+    for name in names:
+        c = chans.get(name) or {}
+        iv = str(c.get("interval") or name)
+        if iv in seen:
+            continue
+        seen.add(iv)
+        out.append((name, iv, c))
+    return out
+
+
+def _why_html(d):
+    if not d:
+        return (f"<i style='color:{GREY}'>No decision recorded yet — the trader hasn't run its "
+                f"cycle, or this agent is disabled.</i>")
+    act = str(d.get("action") or "")
+    col = {"BUY": GREEN, "SELL": RED}.get(act, GREY)
+    where = f"{d.get('pair') or ''}" + (f" · {d.get('channel')}" if d.get("channel") else "")
+    out = [f"<p><b style='color:{col};font-size:14px'>{act}</b> "
+           f"<span style='color:{GREY}'>· {d.get('source') or ''} · {_ago(d.get('ts'))} · {where}</span></p>"]
+    if d.get("reason"):
+        out.append(f"<p>Reason: <b>{d['reason']}</b></p>")
+    ex = d.get("explain") or []
+    if ex:
+        out.append("<p style='margin-bottom:2px'>The gate checklist it produced:</p><ul>")
+        out += [f"<li>{x}</li>" for x in ex]
+        out.append("</ul>")
+    extra = []
+    if d.get("skipped"):
+        extra.append(f"skipped by <b>{d['skipped']}</b>")
+    if d.get("order_type"):
+        extra.append(f"order type {d['order_type']}")
+    if d.get("outlay_quote") is not None:
+        extra.append(f"outlay ≈ ${_num(d['outlay_quote'], 2)}")
+    if extra:
+        out.append(f"<p style='color:{GREY}'>{' · '.join(extra)}</p>")
+    lvls = []
+    if d.get("entry") not in (None, "", 0):
+        lvls.append(f"entry {_px(d['entry'])}")
+    if d.get("stop") not in (None, "", 0):
+        lvls.append(f"stop {_px(d['stop'])}")
+    if d.get("target") not in (None, "", 0):
+        lvls.append(f"target {_px(d['target'])}")
+    if d.get("rr") not in (None, "", 0):
+        lvls.append(f"R:R {_num(d['rr'], 2)}")
+    if d.get("size_quote") not in (None, "", 0):
+        lvls.append(f"size {_num(d['size_quote'], 4)}")
+    if lvls:
+        out.append(f"<p style='color:{GREY}'>planned: {' · '.join(lvls)}</p>")
+    if act == "HOLD":
+        out.append(f"<p style='color:{GREY};font-size:11px'>A HOLD means it looked and passed — the "
+                   f"checklist above is why. It re-checks every cycle (≤5 min).</p>")
+    return "".join(out)
+
+
+def _market_text(sig):
+    if not sig or not sig.get("channels"):
+        return ("No SignalBot snapshot on disk yet — run SignalBot (Settings page) or wait for the "
+                "loop's next scan.")
+    lines = [f"{sig.get('pair')} @ {sig.get('exchange')} · strategy {sig.get('strategy')} · "
+             f"ran {_iso_ago(sig.get('ts'))} · took {(_num_or(sig.get('run_ms'), 0) or 0)/1000:.1f}s"]
+    for name, iv, c in _signal_channels(sig):
+        r = c.get("RSI") or {}
+        mr = c.get("marketResult") or {}
+        sm = c.get("spreadMA") or {}
+        g = c.get("entryGate") or {}
+        lines.append("")
+        lines.append(f"{name:8s} {iv:>5}  {str(c.get('action') or '?'):5s}  "
+                     f"strength={_num(c.get('strength'), 3)} ({c.get('strengthDirection') or '?'})  "
+                     f"RSI={_num(r.get('currentRSI'), 1)}")
+        lines.append(f"   trend={mr.get('trendState')}  spread={mr.get('spreadDirection')} "
+                     f"(chg {_num(mr.get('spreadChange'), 4)}/{mr.get('spreadCount')})  "
+                     f"price={_px(c.get('currPrice'))}")
+        lines.append(f"   floor={_px(c.get('floor'))} low={_px(c.get('low'))} "
+                     f"high={_px(c.get('high'))} roof={_px(c.get('roof'))}")
+        if sm.get("available"):
+            lines.append(f"   MA10−MA30 {_num(sm.get('diff'), 4)} ({_num(sm.get('diffPct'), 3)}%) "
+                         f"{sm.get('signal')}")
+        lines.append(f"   entry gate: rsi={g.get('rsiOk')} spread={g.get('spreadNotAgainst')} "
+                     f"score={g.get('scoreOk')} eligible={g.get('entryEligible')} → "
+                     f"{'READY' if g.get('allPass') else 'not yet'}")
+        lines.append(f"   range={c.get('rangeSignal')} bias={c.get('rangeBias')}  "
+                     f"scenario: {c.get('setupScenario') or '—'}")
+    return "\n".join(lines)
+
+
+def _num_or(v, d):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return d
+
+
+def _scenarios_html(sig):
+    active, seen = {}, set()
+    for _name, iv, c in _signal_channels(sig):
+        if iv in seen:
+            continue
+        seen.add(iv)
+        active.setdefault(_scenario_label(c), []).append(iv)
+    known = {s["n"] for s in SCENARIO_RUBRIC}
+    out = ["<table cellpadding='4'>"]
+    for s in SCENARIO_RUBRIC:
+        hit = active.get(s["n"]) or []
+        mark = (f" <b style='color:{AMBER}'>◀ active ({', '.join(hit)})</b>" if hit else "")
+        out.append(f"<tr><td style='color:{GREY};white-space:nowrap;vertical-align:top'>{s['n']}</td>"
+                   f"<td><b>{s['title']}</b>{mark}<br>"
+                   f"<span style='color:{GREY}'>{s['why']}</span></td></tr>")
+    for key, hits in active.items():
+        if key in known or key == "none":
+            continue
+        out.append(f"<tr><td style='color:{GREY};vertical-align:top'>{key}</td>"
+                   f"<td><b>Higher-lane setup</b> <b style='color:{AMBER}'>◀ active ({', '.join(hits)})</b>"
+                   f"<br><span style='color:{GREY}'>15m lane quiet while the higher timeframes carry the read.</span>"
+                   f"</td></tr>")
+    none_hit = active.get("none") or []
+    if none_hit:
+        out.append(f"<tr><td style='color:{GREY};vertical-align:top'>—</td>"
+                   f"<td><b>No scenario matches cleanly</b> "
+                   f"<b style='color:{AMBER}'>◀ active ({', '.join(none_hit)})</b><br>"
+                   f"<span style='color:{GREY}'>The bot's fields don't line up with any of the six right now.</span>"
+                   f"</td></tr>")
+    out.append("</table>")
+    out.append(f"<p style='color:{GREY};font-size:11px'>The six-scenario rubric is the bot's own "
+               f"vocabulary (from its SignalBot read). These labels are descriptive only — they gate "
+               f"nothing and trade nothing.</p>")
+    return "".join(out)
+
+
+def strength_chain(pol, sig):
+    """This agent's strength climb, read live from the current snapshot — NO network.
+
+    The entry lane is the smallest listed interval; every other listed interval is
+    a climb rung that must clear its own band. Uses the decider's OWN pure helpers
+    (trade/decider.py::_chain_from / _entry_lane / _rung_bands / _strength) so the
+    panel shows exactly what the trader sees. A rung with no lane in the snapshot
+    is marked not-in-snapshot (the decider pulls it live from candles)."""
+    chans = (sig or {}).get("channels") or {}
+    if not chans:
+        return None
+    try:
+        import sys as _s
+        if str(BH / "trade") not in _s.path:
+            _s.path.insert(0, str(BH / "trade"))
+        import decider as _d
+    except Exception:
+        return None
+    try:
+        cfg = dict(pol or {})
+        chain = _d._chain_from(cfg, chans)
+        entry_iv = chain["entry"]
+        en, ec = _d._entry_lane(chans, cfg, entry_iv)
+        em_e = float(cfg.get("entry_strength_max", 0.25))
+        xm_e = float(cfg.get("exit_strength_min", 0.75))
+        e_s = _d._strength((ec or {}).get("strength")) if ec else None
+        out = {"entry": {"interval": entry_iv, "channel": en, "present": ec is not None,
+                         "strength": e_s, "entry_max": em_e, "exit_min": xm_e,
+                         "buy_ok": (e_s is not None and e_s <= em_e),
+                         "sell_ok": (e_s is not None and e_s >= xm_e)},
+               "rungs": [], "chain_used": bool(chain["rungs"])}
+        for r in chain["rungs"]:
+            rn, rc = _d._entry_lane(chans, {}, r)        # any lane carrying that interval
+            em, xm = _d._rung_bands(cfg, r)
+            g = _d._strength((rc or {}).get("strength")) if rc else None
+            out["rungs"].append({"interval": r, "channel": rn, "present": rc is not None,
+                                 "strength": g, "entry_max": em, "exit_min": xm,
+                                 "buy_ok": (g is not None and g <= em),
+                                 "sell_ok": (g is not None and g >= xm)})
+        present = [x for x in out["rungs"] if x["present"]]
+        out["absent"] = [x["interval"] for x in out["rungs"] if not x["present"]]
+        if out["chain_used"]:
+            out["buy_all"] = all(x["buy_ok"] for x in present) if present else None
+            out["sell_all"] = all(x["sell_ok"] for x in present) if present else None
+            out["gauge"] = present[-1] if present else out["entry"]
+        else:
+            out["buy_all"] = out["entry"]["buy_ok"]
+            out["sell_all"] = out["entry"]["sell_ok"]
+            out["gauge"] = out["entry"]
+        return out
+    except Exception:
+        return None
+
+
+def _chain_html(chain):
+    if chain is None:
+        return f"<i style='color:{GREY}'>No SignalBot snapshot to read the chain from yet.</i>"
+    e = chain["entry"]
+
+    def cell(ok):
+        if ok is None:
+            return f"<td style='color:{AMBER}'>live</td>"
+        return (f"<td style='color:{GREEN if ok else RED}'>{'ALLOW' if ok else 'block'}</td>")
+
+    rows = [f"<table cellpadding='4'><tr style='color:{GREY}'><td>lane</td><td>strength</td>"
+            f"<td>BUY ≤</td><td>SELL ≥</td><td>buy</td><td>sell</td></tr>"]
+    e_src = f" · {e['channel']}" if e["channel"] else " · not in snapshot"
+    rows.append(f"<tr><td><b>{e['interval']}</b> entry lane{e_src}</td>"
+                f"<td>{_num(e['strength'], 3) if e['present'] else '—'}</td>"
+                f"<td>{_num(e['entry_max'], 2)}</td><td>{_num(e['exit_min'], 2)}</td>"
+                f"{cell(e['buy_ok'] if e['present'] else None)}{cell(e['sell_ok'] if e['present'] else None)}</tr>")
+    for r in chain["rungs"]:
+        src = f" · {r['channel']}" if r["channel"] else " · not in snapshot"
+        rows.append(f"<tr><td>&nbsp;&nbsp;↳ rung {r['interval']}{src}</td>"
+                    f"<td>{_num(r['strength'], 3) if r['present'] else '—'}</td>"
+                    f"<td>{_num(r['entry_max'], 2)}</td><td>{_num(r['exit_min'], 2)}</td>"
+                    f"{cell(r['buy_ok'] if r['present'] else None)}"
+                    f"{cell(r['sell_ok'] if r['present'] else None)}</tr>")
+    rows.append("</table>")
+
+    g = chain["gauge"]
+    if not chain["chain_used"]:
+        summary = (f"<b>Climb is OFF</b> — this agent trades its entry lane on its own strength "
+                   f"(no rungs listed). Entry band: buy ≤ {_num(e['entry_max'], 2)}, "
+                   f"sell ≥ {_num(e['exit_min'], 2)}.")
+    else:
+        buy = ("ALLOW" if chain["buy_all"] else "BLOCKED") if chain["buy_all"] is not None else "unknown"
+        sell = ("ALLOW" if chain["sell_all"] else "BLOCKED") if chain["sell_all"] is not None else "unknown"
+        bc = GREEN if chain["buy_all"] else (RED if chain["buy_all"] is False else AMBER)
+        sc = GREEN if chain["sell_all"] else (RED if chain["sell_all"] is False else AMBER)
+        summary = (f"<b>Climb ON</b> — BUY through the rungs is <b style='color:{bc}'>{buy}</b>, "
+                   f"SELL is <b style='color:{sc}'>{sell}</b>. Acting gauge = {g['interval']} "
+                   f"strength {_num(g['strength'], 3)}.")
+        if chain["absent"]:
+            summary += (f" <span style='color:{AMBER}'>Rungs {', '.join(chain['absent'])} have no lane "
+                        f"in the snapshot — the decider pulls those live from candles, so they are not "
+                        f"judged here.</span>")
+    return "".join(rows) + f"<p style='color:{GREY}'>{summary}</p>"
+
+
 class AgentsMixin:
     # ---------------------------------------------------------------- build
     def _build_agents(self):
@@ -316,6 +661,10 @@ class AgentsMixin:
         self.ag_orders_scroll.setWidgetResizable(True)
         self._build_orders_tab()
         self.agent_tabs.addTab(self.ag_orders_scroll, "Orders")
+        self.ag_decisions_scroll = QScrollArea()
+        self.ag_decisions_scroll.setWidgetResizable(True)
+        self._build_decisions_tab()
+        self.agent_tabs.addTab(self.ag_decisions_scroll, "Decisions")
         split.addWidget(self.agent_tabs)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
@@ -375,6 +724,35 @@ class AgentsMixin:
         v.addStretch(1)
         self.ag_orders_scroll.setWidget(page)
         self._ord_pos_rows = []
+
+    def _build_decisions_tab(self):
+        page = QWidget()
+        v = QVBoxLayout(page)
+        self.dec_summary = QLabel("")
+        self.dec_summary.setWordWrap(True)
+        self.dec_summary.setTextFormat(Qt.TextFormat.RichText)
+        v.addWidget(self.dec_summary)
+        self.dec_why = QTextBrowser()
+        self.dec_why.setMinimumHeight(180)
+        v.addWidget(_box("Why it is (or isn't) entering — the gate checklist the trader produced",
+                         self.dec_why))
+        self.dec_chain = QTextBrowser()
+        self.dec_chain.setMinimumHeight(170)
+        v.addWidget(_box("Strength chain — the climb the entry lane must clear, read live now",
+                         self.dec_chain))
+        self.tbl_decisions = _table(["When", "Action", "Pair", "Channel", "Reason"], 150)
+        v.addWidget(_box("Decisions it is making (newest first)", self.tbl_decisions))
+        self.dec_market = QTextBrowser()
+        self.dec_market.setFont(QFont("Monospace", 9))
+        self.dec_market.setMinimumHeight(240)
+        v.addWidget(_box("Where the market is — the SignalBot's own read (per interval)",
+                         self.dec_market))
+        self.dec_scenarios = QTextBrowser()
+        self.dec_scenarios.setMinimumHeight(260)
+        v.addWidget(_box("Scenarios — the bot's six, and which one each interval sits in now",
+                         self.dec_scenarios))
+        v.addStretch(1)
+        self.ag_decisions_scroll.setWidget(page)
 
     # ---------------------------------------------------------------- list / selection
     def refresh_agents(self):
@@ -455,6 +833,7 @@ class AgentsMixin:
         self._render_overview(a, pol)
         self._render_settings(a, pol)
         self._refresh_orders_tab()
+        self._render_decisions(a)
 
     def _render_overview(self, a, pol):
         on = a.get("enabled")
@@ -815,8 +1194,15 @@ class AgentsMixin:
     # ---------------------------------------------------------------- orders tab
     def _tick_agent_orders(self):
         try:
-            if self.pages[3].isVisible() and self.agent_tabs.currentWidget() is self.ag_orders_scroll:
+            if not self.pages[3].isVisible():
+                return
+            cur = self.agent_tabs.currentWidget()
+            if cur is self.ag_orders_scroll:
                 self._refresh_orders_tab()
+            elif cur is self.ag_decisions_scroll:
+                a = self._selected_agent()
+                if a:
+                    self._render_decisions(a)
         except Exception:
             pass
 
@@ -912,3 +1298,44 @@ class AgentsMixin:
             tail = (f"<p style='color:{GREY}'>Sells when bid ≥ the lowest PASSING stored price, or when a strategy channel is in its "
                     f"sell zone and the bid itself is profitable. No stop armed.</p>")
         self.pos_detail.setHtml("<br>".join(lines) + "<br>" + tbl + tail)
+
+    # ---------------------------------------------------------------- decisions tab
+    def _render_decisions(self, a):
+        if not hasattr(self, "dec_why") or not a:
+            return
+        decs = load_agent_decisions(a["id"], limit=25)
+        pair = (a.get("pairs") or [None])[0]
+        sig = load_signal(pair) or {}
+        price = next((c.get("currPrice") for c in (sig.get("channels") or {}).values()
+                      if c.get("currPrice") not in (None, "", 0)), None)
+        last = decs[0] if decs else None
+        if last:
+            col = {"BUY": GREEN, "SELL": RED}.get(str(last.get("action")), GREY)
+            head = (f"<b>{a.get('name')}</b> · last decision "
+                    f"<b style='color:{col}'>{last.get('action')}</b> — {last.get('reason') or ''} "
+                    f"<span style='color:{GREY}'>({_ago(last.get('ts'))})</span>")
+        else:
+            head = f"<b>{a.get('name')}</b> · <span style='color:{GREY}'>no decisions recorded yet</span>"
+        if price not in (None, "", 0):
+            head += (f" · <span style='color:{GREY}'>market {_px(price)}"
+                     + (f" @ {sig.get('pair')}" if sig.get("pair") else "") + "</span>")
+        self.dec_summary.setText(head)
+
+        self.dec_why.setHtml(_why_html(last))
+        pol = {}
+        try:
+            pol = self._agents_mod()[0].policy_for(a["id"])
+        except Exception:
+            pass
+        self.dec_chain.setHtml(_chain_html(strength_chain(pol, sig)))
+
+        rows, colors = [], {}
+        for i, d in enumerate(decs):
+            act = str(d.get("action") or "")
+            rows.append([_ago(d.get("ts")), act, d.get("pair") or "—", d.get("channel") or "—",
+                         d.get("reason") or ""])
+            colors[(i, 1)] = {"BUY": GREEN, "SELL": RED}.get(act, GREY)
+        _fill(self.tbl_decisions, rows, colors)
+
+        self.dec_market.setPlainText(_market_text(sig))
+        self.dec_scenarios.setHtml(_scenarios_html(sig))
