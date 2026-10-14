@@ -138,14 +138,22 @@ def mark(pair: str, price: float) -> list:
             continue
         if p.get("mode") == "LIVE":
             continue          # NO STOPS / ledger-only exits for real money: exits.py sells for real
+        # When the owning agent has the opt-in stop engine ON, exits.manage() owns the
+        # stop (it may trail or arm a limit) — so don't fire the raw structural stop here.
+        engine = False
+        try:
+            import agents
+            engine = bool(agents.policy_for(p.get("agent")).get("stop_loss_enabled"))
+        except Exception:
+            engine = False
         reason = None
         if p["side"] == "BUY":
-            if p.get("stop") and price <= p["stop"]:
+            if not engine and p.get("stop") and price <= p["stop"]:
                 reason = "stop"
             elif p.get("target") and price >= p["target"]:
                 reason = "target"
         else:
-            if p.get("stop") and price >= p["stop"]:
+            if not engine and p.get("stop") and price >= p["stop"]:
                 reason = "stop"
             elif p.get("target") and price <= p["target"]:
                 reason = "target"

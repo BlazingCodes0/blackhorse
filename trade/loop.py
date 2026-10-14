@@ -351,12 +351,13 @@ def daemon(interval=300, **kw):
                 raise
             except Exception as e:
                 print("loop error:", e)
-            # sleep in short steps: while any LIVE position is open, watch bid/ask for the exit
+            # sleep in short steps: while any LONG is open, watch bid/ask for the exit
             end = time.time() + max(30, interval)
             while time.time() < end and not _STOP:
                 try:
                     import portfolio, exits
-                    if any(p.get("mode") == "LIVE" and not p.get("exit_txid") for p in portfolio.open_positions()):
+                    if any(str(p.get("side")).upper() == "BUY" and not p.get("exit_txid")
+                           for p in portfolio.open_positions()):
                         for ev in exits.manage():
                             print(json.dumps({"exit": ev}))
                         time.sleep(max(5, int(exits._cfg().get("exit_poll_seconds", 15))))

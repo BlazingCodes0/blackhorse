@@ -495,9 +495,12 @@ def _live_order(plan: dict, pair: str) -> dict:
     return {"ok": True, "mode": "LIVE", "txid": txid, "volume": volume, "result": res.get("result")}
 
 
-def sell_position(pos_id: str, reason: str, price: float = None) -> dict:
+def sell_position(pos_id: str, reason: str, price: float = None,
+                  kind: str = "profit", level: float = None) -> dict:
     """LIMIT-ONLY exit: rest a maker sell at/above the best ask and earn the maker fee.
-    It never crosses (no taker fee). sync_exits() settles the fill and chases the price."""
+    It never crosses (no taker fee). sync_exits() settles the fill and chases the price.
+    `kind="stop"` marks a protective-stop limit: on requote it is released (not chased to
+    the profit minimum) so exits.manage() can re-arm it at the current stop level."""
     import time, portfolio, fees, heart
     pos = next((p for p in portfolio.open_positions() if p["id"] == pos_id), None)
     if not pos or pos.get("exit_txid"):
@@ -540,15 +543,18 @@ def sell_position(pos_id: str, reason: str, price: float = None) -> dict:
             p["exit_txid"] = txid
             p["exit_price"] = price
             p["exit_reason"] = reason
+            p["exit_kind"] = kind
+            if level is not None:
+                p["exit_level"] = level
     portfolio._save(d)
     ex = _exit_load()
     ex = [x for x in ex if x.get("pos_id") != pos_id]
     ex.append({"txid": txid, "pos_id": pos_id, "agent": pos.get("agent"), "pair": pair,
                "price": price, "qty": volume, "volume": volume, "placed": time.time(),
-               "reason": reason, "done": 0})
+               "reason": reason, "done": 0, "kind": kind, "level": level})
     _exit_save(ex)
     return {"ok": True, "txid": txid, "price": price, "volume": volume, "pending": True,
-            "maker": True, "bid": bid, "ask": ask}
+            "maker": True, "bid": bid, "ask": ask, "kind": kind}
 
 
 def sync_exits() -> list:
@@ -623,6 +629,12 @@ def sync_exits() -> list:
                     if p["id"] == e["pos_id"]:
                         p.pop("exit_txid", None)
                 portfolio._save(d)
+                if e.get("kind") == "stop":
+                    # a protective-stop limit is not chased to the profit minimum;
+                    # release it so exits.manage() re-arms at the current level.
+                    events.append({"txid": e["txid"], "pos": e["pos_id"],
+                                   "result": "stop-requote-deferred"})
+                    drop.add(e["txid"]); continue
                 try:
                     _, taker = fees.rates(e["pair"])
                     qty = float(pos["qty"])
