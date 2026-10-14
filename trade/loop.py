@@ -36,8 +36,12 @@ SHUTDOWN = BH / "logs" / "shutdown.json"
 _STOP = False
 
 
-class _Shutdown(Exception):
-    """Raised by the signal handler to unwind the loop cleanly."""
+class _Shutdown(BaseException):
+    """Raised by the signal handler to unwind the loop cleanly.
+
+    Deliberately a BaseException, NOT Exception: the loop body is full of
+    `except Exception` guards (heartbeat, per-pair, exits) that would otherwise
+    swallow the signal and keep sweeping after shutdown was requested."""
     pass
 
 
