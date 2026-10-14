@@ -17,7 +17,7 @@ CLI:
   python3 memory/index.py forget --kind observation --id 12
   python3 memory/index.py search "advisor buy null falling" [--kind observation] [--limit 5]
   python3 memory/index.py recent [--kind trade] [--limit 20]
-  python3 memory/index.py cleanup [--apply]     # enforce retention (delete expired)
+  python3 memory/index.py cleanup [--apply] [--sqlite-only]   # enforce retention
   python3 memory/index.py stats
 """
 import os, sys, json, gzip, time, sqlite3, argparse
@@ -31,12 +31,28 @@ RETENTION = MEM / "retention.json"
 PERMANENT = {"lesson", "rule", "trade", "decision", "digest", "performance", "identity", "conversation"}
 EPHEMERAL = {"observation", "signal_snapshot", "debug", "transient"}
 
+# Curated memory — NEVER trimmed by the row caps below, no matter how big it grows.
+KEEP_KINDS = {"lesson", "rule", "identity", "trade", "performance"}
+# Row caps for the high-volume, machine-generated kinds. These are operational
+# logs, not the curated "know thyself" memory, so keeping the newest N of each
+# bounds the DB without losing a lesson/rule. Override in retention.json under
+# sqlite.max_rows_per_kind. 0 or negative = no cap.
+DEFAULT_MAX_ROWS = {"decision": 50000, "observation": 20000, "digest": 5000, "conversation": 2000}
+
 
 def _retention() -> dict:
     try:
         return json.loads(RETENTION.read_text())
     except (json.JSONDecodeError, OSError):
         return {"ephemeral": {"ttl_seconds": 604800}, "raw_jsonl": {"hot_days": 7, "gzip_days": 90}}
+
+
+def _max_rows() -> dict:
+    """Per-kind row caps, merged with the safe defaults (config wins).
+    Only integer values count as caps; comment/other keys are ignored."""
+    r = _retention().get("sqlite", {}).get("max_rows_per_kind", {})
+    r = {k: v for k, v in r.items() if isinstance(v, int) and not isinstance(v, bool)}
+    return {**DEFAULT_MAX_ROWS, **r}
 
 
 def connect(readonly=False) -> sqlite3.Connection:
@@ -46,7 +62,7 @@ def connect(readonly=False) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     # Disk-first pragmas — keep RSS flat.
     con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("PRAGMA synchronous=FULL")
     con.execute("PRAGMA cache_size=-2000")      # ~2 MB page cache
     con.execute("PRAGMA temp_store=FILE")       # temp data on disk, not RAM
     con.execute(f"PRAGMA mmap_size={64*1024*1024}")
@@ -148,17 +164,36 @@ def recent(kind: str | None = None, limit: int = 20) -> list:
 # --- retention: delete ephemeral + compact raw files -------------------------
 
 def _cleanup_sqlite(apply: bool) -> dict:
+    """Delete expired ephemeral rows, then trim the high-volume kinds to their
+    newest-N cap (curated kinds are never touched). VACUUM reclaims the pages."""
     con = connect()
     now = time.time()
     expired = con.execute(
         "SELECT COUNT(*) c FROM memory WHERE zone='ephemeral' AND expires_at IS NOT NULL AND expires_at < ?",
         (now,)).fetchone()["c"]
-    if apply and expired:
-        con.execute("DELETE FROM memory WHERE zone='ephemeral' AND expires_at IS NOT NULL AND expires_at < ?", (now,))
+    caps = _max_rows()
+    over = {}
+    for kind, cap in caps.items():
+        if kind in KEEP_KINDS or not cap or cap <= 0:
+            continue
+        n = con.execute("SELECT COUNT(*) c FROM memory WHERE kind=?", (kind,)).fetchone()["c"]
+        if n > cap:
+            over[kind] = n - cap
+    if apply:
+        if expired:
+            con.execute("DELETE FROM memory WHERE zone='ephemeral' AND expires_at IS NOT NULL AND expires_at < ?", (now,))
+        for kind, extra in over.items():
+            con.execute(
+                "DELETE FROM memory WHERE id IN ("
+                "SELECT id FROM memory WHERE kind=? ORDER BY ts DESC LIMIT -1 OFFSET ?)",
+                (kind, caps[kind]))
         con.commit()
+        if expired or over:
+            con.execute("VACUUM")           # rewrite the DB without the freed pages
+        # VACUUM writes through the WAL, so checkpoint LAST or the -wal file stays
+        # huge. TRUNCATE keeps DB + WAL at the real on-disk size.
         con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        con.execute("VACUUM")
-    return {"ephemeral_expired": expired}
+    return {"ephemeral_expired": expired, "over_cap": over, "applied": apply}
 
 
 def _age_days(p: Path) -> float:
@@ -200,8 +235,20 @@ def _cleanup_files(apply: bool) -> dict:
             "bytes_freed": bytes_freed, "applied": apply}
 
 
-def cleanup(apply: bool = False) -> dict:
+def cleanup(apply: bool = False, sqlite_only: bool = False) -> dict:
+    """Enforce retention. sqlite_only=True skips the raw-JSONL file pass, which
+    is what the trading loop's daily maintenance wants (disk DB only)."""
+    if sqlite_only:
+        return {"sqlite": _cleanup_sqlite(apply), "files": None, "applied": apply}
     return {"sqlite": _cleanup_sqlite(apply), "files": _cleanup_files(apply), "applied": apply}
+
+
+def checkpoint() -> dict:
+    """Flush the memory WAL back into brain.db so a poweroff can't strand it.
+    Safe to call with nothing pending."""
+    con = connect()
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return {"db": str(DB), "db_bytes": DB.stat().st_size if DB.exists() else 0}
 
 
 def stats() -> dict:
@@ -216,20 +263,22 @@ def stats() -> dict:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd")
-    sub.add_parser("init"); sub.add_parser("stats")
+    sub.add_parser("init"); sub.add_parser("stats"); sub.add_parser("checkpoint")
     r = sub.add_parser("remember"); r.add_argument("--kind", required=True); r.add_argument("--text", required=True); r.add_argument("--meta", nargs="*", default=[])
     f = sub.add_parser("forget"); f.add_argument("--id", type=int, required=True)
     s = sub.add_parser("search"); s.add_argument("query"); s.add_argument("--kind"); s.add_argument("--limit", type=int, default=10)
     rc = sub.add_parser("recent"); rc.add_argument("--kind"); rc.add_argument("--limit", type=int, default=20)
     c = sub.add_parser("cleanup"); c.add_argument("--apply", action="store_true")
+    c.add_argument("--sqlite-only", action="store_true", help="only trim the DB; skip raw JSONL files")
     args = ap.parse_args()
     cmd = args.cmd or "stats"
     if cmd == "init": print(json.dumps(init(), indent=2))
     elif cmd == "stats": print(json.dumps(stats(), indent=2))
+    elif cmd == "checkpoint": print(json.dumps(checkpoint(), indent=2))
     elif cmd == "remember":
         meta = dict(kv.split("=", 1) for kv in args.meta if "=" in kv)
         print(json.dumps({"id": remember(args.kind, args.text, meta, source="cli")}))
     elif cmd == "forget": print(json.dumps({"deleted": forget(args.id)}))
     elif cmd == "search": print(json.dumps(search(args.query, kind=args.kind, limit=args.limit), indent=2))
     elif cmd == "recent": print(json.dumps(recent(kind=args.kind, limit=args.limit), indent=2))
-    elif cmd == "cleanup": print(json.dumps(cleanup(apply=args.apply), indent=2))
+    elif cmd == "cleanup": print(json.dumps(cleanup(apply=args.apply, sqlite_only=args.sqlite_only), indent=2))

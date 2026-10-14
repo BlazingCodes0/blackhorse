@@ -34,6 +34,13 @@
     "synchronous": "NORMAL",
     "cache_size_kib": -2000,
     "temp_store": "FILE",
-    "mmap_size_bytes": 67108864
+    "mmap_size_bytes": 67108864,
+    "max_rows_per_kind": {
+      "comment": "Newest-N cap per high-volume kind. Curated kinds (lesson/rule/identity/trade/performance) are NEVER capped. 0 or negative = no cap.",
+      "decision": 50000,
+      "observation": 20000,
+      "digest": 5000,
+      "conversation": 2000
+    }
   }
 }
