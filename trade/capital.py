@@ -91,10 +91,11 @@ def deployed(agent_id: str = None) -> float:
 
 
 def agent_available(agent_id: str, agent_capital: float) -> float:
-    """What THIS agent may size NOW: its capital MINUS what it already has deployed,
-    bounded by the shared free cash. Capital is a total budget, not a per-trade refill."""
+    """What THIS agent may size NOW: its capital MINUS what it has deployed.
+    Per-agent allocation is the hard cap; global cash feasibility is checked
+    separately (at allocation time and at order execution)."""
     left = float(agent_capital) - deployed(agent_id)
-    return max(0.0, round(min(left, free()), 8))
+    return max(0.0, round(left, 8))
 
 
 def equity() -> float:

@@ -11,16 +11,24 @@
         "exit_strength_min": 0.7,
         "require_tide_context": false,
         "channels": [
-          "ripple"
+          "ripple",
+          "wave",
+          "tide"
         ],
         "min_reward_risk": 1.2,
         "stop_max_pct": 3.0,
         "risk_per_trade_pct": 2.0,
         "max_position_pct": 50.0,
         "strategy_intervals": [
-          "15m"
+          "15m",
+          "60m",
+          "240m"
         ],
-        "strategy": "custom"
+        "strategy": "swing",
+        "entry_strength_max_60m": 0.0,
+        "exit_strength_min_60m": 1.0,
+        "entry_strength_max_240m": 0.2,
+        "exit_strength_min_240m": 0.8
       },
       "created": "2026-10-04T15:53:25Z",
       "mode": "LIVE",
@@ -106,12 +114,13 @@
         "strategy": "custom",
         "strategy_intervals": [
           "60m",
-          "240m",
-          "1440m"
+          "240m"
         ],
         "entry_strength_max": 0.15,
         "exit_strength_min": 0.8,
-        "max_position_pct": 50.0
+        "max_position_pct": 50.0,
+        "entry_strength_max_240m": 0.2,
+        "exit_strength_min_240m": 1.0
       },
       "created": "2026-10-07T11:48:07Z",
       "pairs": [

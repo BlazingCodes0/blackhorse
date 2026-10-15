@@ -281,6 +281,15 @@ class BlackHorse(AgentsMixin, QMainWindow):
         self.btn_verify.setMinimumHeight(34)
         self.btn_verify.clicked.connect(self.verify_off)
         head.addWidget(self.btn_verify, 0, Qt.AlignmentFlag.AlignTop)
+        btn_restart_app = QPushButton("Restart")
+        btn_restart_app.setMinimumHeight(34)
+        btn_restart_app.clicked.connect(self.restart_app)
+        head.addWidget(btn_restart_app, 0, Qt.AlignmentFlag.AlignTop)
+        btn_shutdown_app = QPushButton("Shutdown")
+        btn_shutdown_app.setMinimumHeight(34)
+        btn_shutdown_app.setStyleSheet("background:#7f1d1d;color:white;")
+        btn_shutdown_app.clicked.connect(self.shutdown_app)
+        head.addWidget(btn_shutdown_app, 0, Qt.AlignmentFlag.AlignTop)
         v.addLayout(head)
 
         def card(title):
@@ -366,6 +375,19 @@ class BlackHorse(AgentsMixin, QMainWindow):
             self.dash_trade.setText("\n".join(lines))
         except Exception as e:
             self.dash_trade.setText(f"unavailable: {e}")
+
+    def restart_app(self):
+        """Re-exec the dashboard in place, keeping the same process/args."""
+        import os, sys
+        self._quitting = True
+        if self.tray:
+            self.tray.hide()
+        python = sys.executable or "python3"
+        os.execv(python, [python] + sys.argv)
+
+    def shutdown_app(self):
+        """Quit the dashboard cleanly (defense service, if enabled, keeps running)."""
+        self._quit_app()
 
     def verify_off(self):
         """Prove, from the things that actually run, that nothing is active.
@@ -839,7 +861,7 @@ class BlackHorse(AgentsMixin, QMainWindow):
             aud = agents.audited()
             try:
                 import capital
-                pool = f" · pool free ${capital.free()} (open ${capital.status()['in_open_positions']})"
+                pool = f" · pool free ${capital.free()} · deployed ${aud['deployed']}"
             except Exception:
                 pool = ""
             if aud["over_allocated"]:
@@ -977,7 +999,38 @@ class BlackHorse(AgentsMixin, QMainWindow):
         v.addLayout(hrow)
 
         v.addWidget(QLabel("— Caps (heart/policies/rules.json) —"))
-        self.heart_caps = QTextEdit(); self.heart_caps.setReadOnly(True); self.heart_caps.setMaximumHeight(180)
+        from PyQt6.QtWidgets import QDoubleSpinBox, QSpinBox, QGridLayout
+        self._heart_cap_specs = [
+            ("max_open_positions",  "Max open positions",     1, 1000,   0, True),
+            ("max_position_pct",    "Max position %",         1.0, 100.0, 1, False),
+            ("max_order_quote",     "Max order quote ($)",    1.0, 100000.0, 2, False),
+            ("max_orders_per_hour", "Max orders / hour",      1, 1000,   0, True),
+            ("max_daily_loss_pct",  "Max daily loss %",       0.1, 100.0, 1, False),
+            ("max_drawdown_pct",    "Max drawdown %",         0.1, 100.0, 1, False),
+        ]
+        cap_form = QGridLayout()
+        self._heart_cap_widgets = {}
+        for i, (key, label, lo, hi, dec, is_int) in enumerate(self._heart_cap_specs):
+            cap_form.addWidget(QLabel(label), i, 0)
+            if is_int:
+                sb = QSpinBox()
+            else:
+                sb = QDoubleSpinBox()
+                sb.setDecimals(dec)
+            sb.setRange(lo, hi)
+            self._heart_cap_widgets[key] = sb
+            cap_form.addWidget(sb, i, 1)
+        v.addLayout(cap_form)
+        cap_row = QHBoxLayout()
+        b_save_caps = QPushButton("Save caps")
+        b_save_caps.clicked.connect(self.save_heart_caps)
+        cap_row.addWidget(b_save_caps)
+        cap_row.addStretch(1)
+        v.addLayout(cap_row)
+        self.heart_caps_msg = QLabel("")
+        self.heart_caps_msg.setFont(QFont("Monospace", 9))
+        v.addWidget(self.heart_caps_msg)
+        self.heart_caps = QTextEdit(); self.heart_caps.setReadOnly(True); self.heart_caps.setMaximumHeight(140)
         self.heart_caps.setFont(QFont("Monospace", 9))
         v.addWidget(self.heart_caps)
 
@@ -998,6 +1051,31 @@ class BlackHorse(AgentsMixin, QMainWindow):
         except Exception as e:
             self.heart_status.setText(f"heartbeat error: {e}")
 
+    def save_heart_caps(self):
+        import json as _json
+        path = Path.home()/"blackhorse"/"heart"/"policies"/"rules.json"
+        try:
+            rules = _json.loads(path.read_text())
+        except Exception:
+            rules = {}
+        caps = dict(rules.get("caps") or {})
+        for key, sb in self._heart_cap_widgets.items():
+            caps[key] = sb.value()
+        rules["caps"] = caps
+        path.write_text(_json.dumps(rules, indent=2) + "\n")
+        self.heart_caps_msg.setText(
+            f"saved caps → {path} · max_open_positions is the one that blocks rung-buys")
+        self.heart_caps_msg.setStyleSheet("color:#22c55e")
+        try:
+            import importlib, sys as _s
+            if str(Path.home()/"blackhorse"/"trade") not in _s.path:
+                _s.path.insert(0, str(Path.home()/"blackhorse"/"trade"))
+            import heart
+            importlib.reload(heart)
+        except Exception:
+            pass
+        self.refresh_heart()
+
     def refresh_heart(self):
         try:
             h = self._heart_mod()
@@ -1008,6 +1086,11 @@ class BlackHorse(AgentsMixin, QMainWindow):
                 f"orders last hour: {st['orders_last_hour']} · autonomy: {lock}")
             self.heart_status.setStyleSheet("color:green" if st["heartbeat_ok"] else "color:orange")
             self.heart_caps.setPlainText(json.dumps(st["caps"], indent=2))
+            for key, sb in getattr(self, "_heart_cap_widgets", {}).items():
+                if key in st["caps"]:
+                    sb.blockSignals(True)
+                    sb.setValue(st["caps"][key])
+                    sb.blockSignals(False)
             u = st["unlock"]
             self.heart_unlock.setText(
                 "can_arm: %s\n" % u["can_arm"] +
@@ -1049,7 +1132,8 @@ class BlackHorse(AgentsMixin, QMainWindow):
             agents, _ = self._agents_mod()
             key = self.agent_profile.currentData()
             cap = float(self.agent_capital.text().strip() or 0)
-            agents.create_agent(self.agent_kind.currentText(), key, capital=cap)
+            mode = self.agent_kind.currentText().strip().upper()
+            agents.create_agent("trading", key, capital=cap, mode=mode)
             self.refresh_agents()
         except Exception as e:
             self.agent_status.setText(f"create error: {e}")

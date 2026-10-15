@@ -179,7 +179,7 @@ def _available_capital() -> float:
 
 
 def create_agent(kind: str, profile: str = "15m", name: str = None, capital: float = 0,
-                 allow_over: bool = False, mode: str = "LIVE") -> dict:
+                 allow_over: bool = False, mode: str = "PAPER") -> dict:
     """Create an agent. `profile` is now just a START TEMPLATE: pass an interval key
     (5m/15m/60m/240m/1440m) and the agent is seeded with that interval's default
     settings + default strength climb. Anything may still be edited afterwards."""
@@ -198,6 +198,9 @@ def create_agent(kind: str, profile: str = "15m", name: str = None, capital: flo
     n = d["next_id"]
     agent_id = f"agent_{n}"
     d["next_id"] = n + 1
+    mode = str(mode or "PAPER").upper()
+    if mode not in ("PAPER", "LIVE"):
+        mode = "PAPER"
     name = name or f"{seed['label'].split(' ')[0] if seed else kind} {n}"
     ov = {}
     if seed:
@@ -311,6 +314,19 @@ def set_pairs(agent_id: str, pairs: list) -> dict:
     d = _load(); a = get_agent(agent_id)
     a['pairs'] = pairs if isinstance(pairs, list) else pairs
     d['agents'][agent_id] = a
+    _save(d)
+    return _summary(a)
+
+
+def set_mode(agent_id: str, mode: str) -> dict:
+    """Per-agent PAPER/LIVE. PAPER never places a live order — fills are simulated
+    and booked as paper positions. LIVE sends real orders to the venue."""
+    m = str(mode or "PAPER").upper()
+    if m not in ("PAPER", "LIVE"):
+        raise ValueError("mode must be PAPER or LIVE")
+    d = _load(); a = get_agent(agent_id)
+    a["mode"] = m
+    d["agents"][agent_id] = a
     _save(d)
     return _summary(a)
 
