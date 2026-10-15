@@ -69,9 +69,8 @@ def decide(verdict=None, pair=None) -> dict:
     # If agents disagree on side, we stand down and record who wanted what.
     # It does NOT choose a winner. If they all want the same side, that is
     # same-signal confirmation, not an argument.
+    def strength_of(p):
         d = p["decision"]
-        # logical strength = conviction (score) * reward:risk, split out so the
-        # broker can explain WHY one side won rather than silently picking one.
         return (d.get("score", 0) or 0) * (d.get("rr", 0) or 0)
 
     ranked = sorted(actionable, key=strength_of, reverse=True)
@@ -153,10 +152,34 @@ def decide_all(verdict=None, pair=None) -> dict:
                         "decision": d, "spendable": avail, "holding": holding})
         # crude pair-specific size check before any market/limit hit
         try:
-            import order_rules
+            import order_rules, fees, math
             _act = d.get('action')
-            if _act in ('BUY','SELL'):
-                _min_err = order_rules.assess_size(pair or d.get('pair','DOT/USD'), d.get('entry'), d.get('size_quote',0) or 0)
+            pair_b = pair or d.get('pair', 'DOT/USD')
+            if _act in ('BUY', 'SELL'):
+                _min_err = order_rules.assess_size(pair_b, d.get('entry'), d.get('size_quote', 0) or 0)
+                if _min_err and _act == 'BUY':
+                    # risk sizing came in below the exchange minimum: if the agent's
+                    # REMAINING allocation can still fund a valid minimum order, size
+                    # up to it (never above the per-agent cap) so the setup isn't lost.
+                    try:
+                        import capital
+                        avail_rem = float(capital.agent_available(a['id'], a.get('capital', 0)) or 0)
+                        ent = float(d.get('entry') or 0)
+                        if avail_rem > 0 and ent > 0:
+                            info = fees.pair_info(pair_b)
+                            _, tk = fees.rates(pair_b)
+                            min_base = float(info.get('ordermin') or 0)
+                            costmin = float(info.get('costmin') or 0)
+                            need_quote = max(min_base * ent, costmin)      # minimum notional
+                            need_quote_eff = need_quote * (1.0 + tk)        # incl. worst-case fee
+                            if avail_rem >= need_quote_eff - 1e-9:
+                                # spend the remaining allocation, floored to the cent
+                                sq_cand = math.floor(min(avail_rem / (1.0 + tk), avail_rem) * 100.0) / 100.0
+                                if (sq_cand / ent >= min_base - 1e-9) and (sq_cand >= costmin - 1e-9):
+                                    d['size_quote'] = round(sq_cand, 2)
+                                    _min_err = None
+                    except Exception:
+                        pass
                 if _min_err:
                     d['action'] = 'HOLD'
                     d['reason'] = f"size check: {_min_err}"
@@ -168,7 +191,8 @@ def decide_all(verdict=None, pair=None) -> dict:
                 hv = heart.check(action=d["action"], quote=d.get("size_quote",0) or 0,
                                  venue=_active_venue())
                 if hv["decision"] == "ALLOW":
-                    approved.append({"agent": a["id"], "name": a.get("name"), "profile": a.get("profile"),"mode": a.get("mode"),
+                    approved.append({"agent": a["id"], "name": a.get("name"), "profile": a.get("profile"),
+                                     "mode": str(a.get("mode") or "PAPER").upper(),
                                      "action": d["action"], "channel": d.get("channel"), "entry": d.get("entry"),
                                      "stop": d.get("stop"), "target": d.get("target"), "size_quote": d.get("size_quote"),
                                      "order_type": d.get("order_type"), "expiry_s": d.get("expiry_s"),

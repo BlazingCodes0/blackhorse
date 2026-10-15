@@ -181,6 +181,9 @@ SETTINGS = [
     ]),
     ("Where it trades", [
         ("pairs", "Pairs", "list", "agent", "Comma list, e.g. DOT/USD,ETH/USD. Empty = every pair."),
+        ("mode", "Mode", "combo:PAPER,LIVE", "agent",
+         "PAPER = this agent never places a live order (simulated fills only). "
+         "LIVE = it sends real orders to the venue. Per agent, independent of the others."),
         ("strategy", "Strategy", "combo:swing,daytrade,custom", "policy", "Interval combo (editable). swing/daytrade are examples."),
         ("intervals", "Intervals", "list", "policy", "SMALLEST = the entry (trading) lane. "
          "Every OTHER interval listed becomes a strength-chain rung (60m -> 240m -> 1440m) "
@@ -587,9 +590,9 @@ class AgentsMixin:
         # create row
         cg = QGroupBox("Create an agent")
         cr = QHBoxLayout(cg)
-        cr.addWidget(QLabel("kind"))
+        cr.addWidget(QLabel("mode"))
         self.agent_kind = QComboBox()
-        self.agent_kind.addItems(["trading", "youtube"])
+        self.agent_kind.addItems(["PAPER", "LIVE"])
         cr.addWidget(self.agent_kind)
         cr.addWidget(QLabel("interval"))
         self.agent_profile = QComboBox()
@@ -898,9 +901,6 @@ class AgentsMixin:
         # Entry lane & strength climb — the interval buttons ARE the profiles.
         pv.addWidget(self._build_interval_block(a, pol))
         for title, fields in SETTINGS:
-            # skip Where it trades block (already handled)
-            if title == 'Where it trades':
-                continue
             g = QGroupBox(title)
             grid = QGridLayout(g)
             grid.setHorizontalSpacing(14)
@@ -943,7 +943,7 @@ class AgentsMixin:
         row.addWidget(b_rev)
         row.addWidget(self.ag_save_msg, 1)
         pv.addLayout(row)
-        note = QLabel("Changes apply on the trader's next cycle (≤5 min). Mode (PAPER/LIVE) is set in config/agents.json.")
+        note = QLabel("Changes apply on the trader's next cycle (≤5 min). Mode is per agent — PAPER agents never place live orders.")
         note.setStyleSheet(f"color:{GREY};font-size:11px")
         note.setWordWrap(True)
         pv.addWidget(note)
@@ -1176,6 +1176,8 @@ class AgentsMixin:
                 if same: continue
                 if key == 'pairs':
                     agents.set_pairs(aid, val)
+                elif key == 'mode':
+                    agents.set_mode(aid, val)
                 elif key == 'capital':
                     agents.set_capital(aid, val, allow_over=True)
                 else:
