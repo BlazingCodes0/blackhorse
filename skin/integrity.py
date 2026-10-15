@@ -22,7 +22,12 @@ def _hash(p: Path) -> str:
     return h.hexdigest()[:16]
 
 def scan():
-    baseline = json.loads(BASELINE.read_text()) if BASELINE.exists() else {}
+    try:
+        baseline = json.loads(BASELINE.read_text()) if BASELINE.exists() else {}
+    except (OSError, ValueError):
+        baseline = {}  # empty/corrupt baseline — re-baseline, never crash the sweep
+    if not isinstance(baseline, dict):
+        baseline = {}
     current = {}
     for root in WATCHED:
         if not root.exists():

@@ -366,4 +366,4 @@ profiles), `decider_design.md`, `ENTRY_GATE_FINDINGS.md`, `market_signal_extract
 
 ## License
 
-MIT — see [LICENSE](LICENSE). © 2026 Mustafa Bashiir Ahmed (Mr.Fluffy).
+MIT — see [LICENSE](LICENSE). © 2026 Mr.Fluffy.

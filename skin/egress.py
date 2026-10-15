@@ -16,7 +16,12 @@ SUSPICIOUS_OUTBOUND_PORTS = {4444, 5555, 6666, 1337, 31337, 23, 69}
 def scan():
     if not psutil:
         return
-    baseline = json.loads(BASELINE.read_text()) if BASELINE.exists() else {}
+    try:
+        baseline = json.loads(BASELINE.read_text()) if BASELINE.exists() else {}
+    except (OSError, ValueError):
+        baseline = {}  # empty/corrupt/torn baseline — start fresh, never crash the sweep
+    if not isinstance(baseline, dict):
+        baseline = {}
     seen = {}
     for c in psutil.net_connections(kind="tcp"):
         if c.status != "ESTABLISHED" or not c.raddr or not c.pid:

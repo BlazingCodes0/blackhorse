@@ -65,9 +65,11 @@ DEFAULTS = {
 def load() -> dict:
     if SETTINGS_FILE.exists():
         try:
-            return {**DEFAULTS, **json.loads(SETTINGS_FILE.read_text())}
-        except (json.JSONDecodeError, OSError):
-            pass
+            data = json.loads(SETTINGS_FILE.read_text())
+            if isinstance(data, dict):
+                return {**DEFAULTS, **data}
+        except (ValueError, OSError, TypeError):
+            pass  # empty/corrupt settings — fall back to defaults, never crash
     return dict(DEFAULTS)
 
 def save(cfg: dict):
