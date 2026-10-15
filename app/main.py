@@ -28,6 +28,34 @@ except Exception:
 settings = _settings_mod
 
 LOG = BH / "logs" / "threats.jsonl"
+
+_APP_LOCK_FD = None
+
+
+def _acquire_app_singleton() -> bool:
+    """One GUI, ever. flock is auto-released by the OS when the process dies,
+    so a crash never blocks the next start (self-heals). A duplicate launch
+    (manual + the login autostart, say) exits 0 instead of running two windows
+    that fight over config. Survives the in-app Restart button's os.execv."""
+    global _APP_LOCK_FD
+    import fcntl
+    fd = None
+    try:
+        p = BH / "logs" / "app.lock"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(p), os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return False
+    os.ftruncate(fd, 0)
+    os.write(fd, f"{os.getpid()}\n".encode())
+    _APP_LOCK_FD = fd          # keep the fd open for the whole process lifetime
+    return True
 LOCKDOWN_FLAG = BH / "config" / "LOCKDOWN"
 
 def _n(v, dp=4):
@@ -1104,6 +1132,9 @@ class BlackHorse(AgentsMixin, QMainWindow):
         import sys as _s
         if getattr(self, "_loop_proc", None) and self._loop_proc.poll() is None:
             self.loop_status.setText("loop already running"); return
+        if self._systemctl("is-active", "blackhorse-trader.service").stdout.strip() == "active":
+            self.loop_status.setText("loop already running (systemd: blackhorse-trader.service)")
+            return
         args = [sys.executable, str(Path.home()/"blackhorse"/"trade"/"loop.py"),
                 "--interval", str(self.loop_interval.value()), "--no-brain"]
         self._loop_proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1372,6 +1403,9 @@ WantedBy=default.target
         self.refresh_log()
 
 if __name__ == "__main__":
+    if not _acquire_app_singleton():
+        print("blackhorse GUI already running (logs/app.lock is held) — exiting", file=sys.stderr)
+        raise SystemExit(0)
     app = QApplication(sys.argv)
     # closing the window must NOT quit — the app lives in the tray until Quit
     app.setQuitOnLastWindowClosed(False)

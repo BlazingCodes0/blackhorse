@@ -34,6 +34,33 @@ SETUP = BH / "config" / "signal_setup.json"
 SHUTDOWN = BH / "logs" / "shutdown.json"
 
 _STOP = False
+_LOCK_FD = None
+
+
+def _acquire_singleton(name: str) -> bool:
+    """Only ONE loop may run. flock is released by the OS whenever the process
+    dies — including SIGKILL — so a crashed or killed loop never blocks the next
+    start (the lock self-heals). A second launch (manual, GUI, or a stray service
+    start) exits 0 immediately instead of trading a duplicate cycle."""
+    global _LOCK_FD
+    import fcntl
+    fd = None
+    try:
+        path = BH / "logs" / f"{name}.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return False
+    os.ftruncate(fd, 0)
+    os.write(fd, f"{os.getpid()}\n".encode())
+    _LOCK_FD = fd          # keep the fd open for the whole process lifetime
+    return True
 
 
 class _Shutdown(BaseException):
@@ -463,6 +490,9 @@ if __name__ == "__main__":
     ap.add_argument("--pairs", default="DOT/USD,BTC/USD,ETH/USD,SOL/USD,XRP/USD")
     ap.add_argument("--hours", type=float, default=8)
     args = ap.parse_args()
+    if not _acquire_singleton("loop"):
+        print("blackhorse loop already running (logs/loop.lock is held) — exiting", file=sys.stderr)
+        raise SystemExit(0)
     kw = dict(refresh_signal=not args.no_signal, ask_brain=not args.no_brain, pair=args.pair)
     if args.night:
         print(json.dumps(night_shift(pairs=[p.strip() for p in args.pairs.split(",")],

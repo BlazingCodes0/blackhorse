@@ -54,7 +54,14 @@ FAIL_STATE = Path.home() / "blackhorse" / "logs" / "net_fail_state.json"
 def check_port(name, host, port, timeout):
     t0 = time.time()
     import json as _json
-    state = _json.loads(FAIL_STATE.read_text()) if FAIL_STATE.exists() else {}
+    # tolerate a missing, empty, or corrupt state file — a bad read must never
+    # crash the defense loop (that just makes systemd restart it forever).
+    try:
+        state = _json.loads(FAIL_STATE.read_text()) if FAIL_STATE.exists() else {}
+    except (OSError, ValueError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
     try:
         with socket.create_connection((host, port), timeout=timeout):
             ms = int((time.time() - t0) * 1000)

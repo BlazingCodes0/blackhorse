@@ -38,7 +38,12 @@ def scan_resources():
 def scan_policy_files():
     baseline = Path.home() / "blackhorse" / "logs" / "policy_baseline.json"
     import json
-    old = json.loads(baseline.read_text()) if baseline.exists() else {}
+    try:
+        old = json.loads(baseline.read_text()) if baseline.exists() else {}
+    except (OSError, ValueError):
+        old = {}  # empty/corrupt baseline — re-baseline, never crash the sweep
+    if not isinstance(old, dict):
+        old = {}
     new = {}
     for d in WATCH_DIRS:
         if not d.exists():
