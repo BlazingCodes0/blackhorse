@@ -32,7 +32,9 @@ BH = Path.home() / "blackhorse"
 sys.path.insert(0, str(BH / "trade")); sys.path.insert(0, str(BH / "memory"))
 SIGNAL = BH / "logs" / "signal_latest.json"
 WATCH = BH / "logs" / "exit_watch.json"
-STRATEGY_CHANNELS = ("ripple", "wave", "tide")      # 15m / 60m / 240m lanes
+# Channels are ANONYMOUS lanes keyed by their own 'interval' (never by name). These
+# are only a last-resort list of intervals to look at when an agent has no policy.
+STRATEGY_INTERVALS = ("15m", "60m", "240m")
 
 
 def _cfg() -> dict:
@@ -61,18 +63,17 @@ def take_snapshot(agent: str = None, entry_channel: str = None, signal: dict = N
     if not sig:
         return {"ts": time.time(), "channels": {}, "note": "no signal available"}
     chans = sig.get("channels") or {}
-    want = list(STRATEGY_CHANNELS)
+    want_iv = set(STRATEGY_INTERVALS)
     try:
         import agents
-        for c in (agents.policy_for(agent).get("channels") or []):
-            if c not in want:
-                want.append(c)
+        pol = agents.policy_for(agent)
+        want_iv |= set(pol.get("strategy_intervals") or [])
     except Exception:
         pass
     out = {}
-    for name in want:
-        c = chans.get(name)
-        if not c:
+    for name, c in chans.items():
+        c = c or {}
+        if c.get("interval") not in want_iv:
             continue
         adv = c.get("advisor") or {}
         out[name] = {"interval": c.get("interval"), "curr": c.get("currPrice"),
@@ -130,12 +131,13 @@ def ticker(pair: str):
 
 
 def _exit_zone(pos: dict, cfg: dict):
-    """Strategy says sell time: check exit zone respecting entry channel (avoid premature TF exits)."""
+    """Strategy says sell time: check the exit zone over the agent's own intervals,
+    entry interval first (avoid premature TF exits). Lanes are matched by INTERVAL."""
     try:
         import agents
         pol = agents.policy_for(pos.get("agent"))
         band = float(pol.get("exit_strength_min", cfg["exit_strength_min"]))
-        chans = pol.get("channels") or list(STRATEGY_CHANNELS)
+        want_iv = set(pol.get("strategy_intervals") or STRATEGY_INTERVALS)
         import signals
         sig = signals.load(pos.get("pair"))
         if not sig:
@@ -147,23 +149,31 @@ def _exit_zone(pos: dict, cfg: dict):
                 sc = _json.loads(sc)
         except Exception:
             sc = {}
-        entry_ch = sc.get("entry_channel") or sc.get("channel")
-        # Prefer entry channel first
-        order = []
-        if entry_ch:
-            order.append(entry_ch)
-        for n in chans:
-            if n not in order:
-                order.append(n)
-        # For swing-style (no 5m), avoid treating very short TF (ripple5/wave15 variants?) but also ripple can be noisy; prefer entry + higher/entry-aligned
-        for n in order:
-            c = (sig.get("channels", {}).get(n) or {})
+        entry_iv = pos.get("interval") or sc.get("interval")
+        chans = sig.get("channels") or {}
+        # entry lane first, then the agent's other intervals (short -> long)
+        def _rank(item):
+            _n, c = item
+            iv = str((c or {}).get("interval"))
+            return (0 if entry_iv and iv == str(entry_iv) else 1, _iv_sort(iv))
+        for n, c in sorted(chans.items(), key=_rank):
+            c = c or {}
+            if c.get("interval") not in want_iv:
+                continue
             s = c.get("strength")
             if s is not None and float(s) >= band:
-                return True, f"{n} strength {round(float(s), 3)} >= {band}"
-        return False, "no strategy channel in exit zone"
+                return True, f"{n}/{c.get('interval')} strength {round(float(s), 3)} >= {band}"
+        return False, "no strategy lane in exit zone"
     except Exception as e:
         return False, f"exit-zone unreadable: {e}"
+
+
+def _iv_sort(iv):
+    try:
+        s = str(iv)
+        return int(s[:-1]) if s.endswith("m") and s[:-1].isdigit() else 10 ** 9
+    except Exception:
+        return 10 ** 9
 
 
 # --------------------------------------------------------------- stop loss (opt-in)

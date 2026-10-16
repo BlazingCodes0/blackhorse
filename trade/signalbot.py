@@ -80,8 +80,9 @@ def run(pair="DOT/USD", strategy="swing", exchange=None, timeout=180, channels=N
             if meta2.get("ok"):
                 raw2 = json.loads(RAW.read_text())
                 snap2 = normalize(raw2, meta2)
-                for ch, label in (("wave","wave15"), ("ripple","ripple5"), ("tide","tide60")):
+                for ch in ("wave", "ripple", "tide"):
                     if ch in snap2.get("channels", {}):
+                        label = f"dt_{ch}"          # internal dedup key, never an interval slot
                         snap["channels"][label] = dict(snap2["channels"][ch])
                         snap["channels"][label]["role"] = f"{snap2['channels'][ch].get('role','mid') or 'mid'}/dayTrade"
                 snap["dayTrade_ts"] = snap2.get("ts")
@@ -232,10 +233,13 @@ def _ma_cross(mx) -> dict:
             "cross": "STRONG_UP" if crossed_up else ("STRONG_DOWN" if crossed_down else "none")}
 
 def normalize(raw: dict, meta: dict) -> dict:
-    """Flatten SignalBot channels into one compact per-interval read."""
-    channel_map = {"ripple": "lower", "wave": "mid", "tide": "higher"}
+    """Flatten SignalBot channels into one compact per-interval read.
+
+    The three source keys (ripple/wave/tide) are the SignalBot's own slot names —
+    we read them as emitted, but never treat them as fixed intervals. A lane is
+    identified by its own 'interval' field; 'role' is ranked by interval, not name."""
     channels = {}
-    for ch, role in channel_map.items():
+    for ch in ("ripple", "wave", "tide"):
         s = raw.get(ch) or {}
         f = s.get("factorResult") or {}
         m = s.get("marketResult") or {}
@@ -244,7 +248,7 @@ def normalize(raw: dict, meta: dict) -> dict:
         buy = adv.get("buy")
         sell = adv.get("sell")
         channels[ch] = {
-            "role": role,
+            "role": None,
             "interval": s.get("interval"),
             "currPrice": s.get("currPrice"),
             "action": d.get("action"),
@@ -288,6 +292,12 @@ def normalize(raw: dict, meta: dict) -> dict:
                 "prices": adv.get("prices") or {},
             },
         }
+    # rank roles by interval (lower/mid/higher) — never by the source slot name
+    _ranked = sorted((n for n in channels if _iv_minutes(channels[n].get("interval")) is not None),
+                     key=lambda n: _iv_minutes(channels[n].get("interval")))
+    _bands = ("lower", "mid", "higher")
+    for _i, _n in enumerate(_ranked):
+        channels[_n]["role"] = _bands[_i] if _i < len(_bands) else f"rank{_i}"
     # observability layer: explicit entry-gate checklist + bottom-watch + scenario
     # label. Context for the brain and the owner — changes NO decision.
     for _ch in channels.values():
@@ -358,8 +368,8 @@ def _gate_strength60(channels: dict):
     """Stamp the 15m-or-smaller lanes with their strength-chain-gated eligibility.
 
     Owner rule: a small lane's OWN range strength is sloppy/noisy, so the decider
-    gates small-timeframe BUY/SELL on a ladder of higher-timeframe strengths — 60m,
-    then 240m, then 1440m — each rung with its own buy/sell band (decider.json).
+    gates small-timeframe BUY/SELL on a ladder of higher-timeframe strengths — each
+    rung with its own buy/sell RANGE (config/decider.json, dynamic per interval).
     This makes that gate visible in the snapshot as entryEligible60/exitEligible60
     + strengthGate60.note, so a raw 'False' next to all-green indicators is never a
     mystery. Observability only — the decider enforces the real per-agent chain at
@@ -372,17 +382,20 @@ def _gate_strength60(channels: dict):
         if m is not None and m > 15 and m not in by_iv:
             by_iv[m] = (n, c)
     higher = [by_iv[m] for m in sorted(by_iv)]
-    entry_max, exit_min = _strength_bands()
+    try:                                              # single source of truth = decider
+        import decider as _dec
+        d = json.loads(DECIDER_CFG.read_text())
+    except Exception:
+        _dec, d = None, {}
     reads = []
     for n, c in higher:
         iv = str(c.get("interval"))
-        em, xm = entry_max, exit_min
-        try:
-            d = json.loads(DECIDER_CFG.read_text())
-            em = float(d.get(f"entry_strength_max_{iv}", entry_max))
-            xm = float(d.get(f"exit_strength_min_{iv}", exit_min))
-        except Exception:
-            pass
+        if _dec:
+            bands = _dec._bands(d, iv)
+            blo, bhi = bands["buy"]; slo, shi = bands["sell"]
+        else:
+            em, xm = _strength_bands()
+            blo, bhi, slo, shi = 0.0, em, xm, 1.0
         try:
             s = None if c.get("strength") is None else float(c["strength"])
         except (TypeError, ValueError):
@@ -392,13 +405,13 @@ def _gate_strength60(channels: dict):
                           "note": f"{iv} absent — decider pulls it live",
                           "buy_allowed": False, "sell_allowed": False})
             continue
-        buy_ok = s <= em
-        sell_ok = s >= xm
+        buy_ok = blo <= s <= bhi
+        sell_ok = slo <= s <= shi
         reads.append({"interval": iv, "strength": round(s, 4), "source": n,
-                      "entry_strength_max": em, "exit_strength_min": xm,
+                      "buy_range": [blo, bhi], "sell_range": [slo, shi],
                       "buy_allowed": buy_ok, "sell_allowed": sell_ok,
-                      "note": f"{iv} str {round(s, 3)} via {n} · BUY ≤ {em:g}: "
-                              f"{'ALLOW' if buy_ok else 'BLOCK'} · SELL ≥ {xm:g}: "
+                      "note": f"{iv} str {round(s, 3)} via {n} · BUY in [{blo:g},{bhi:g}]: "
+                              f"{'ALLOW' if buy_ok else 'BLOCK'} · SELL in [{slo:g},{shi:g}]: "
                               f"{'ALLOW' if sell_ok else 'BLOCK'}"})
     agg_buy = all(r.get("buy_allowed") for r in reads)
     agg_sell = all(r.get("sell_allowed") for r in reads)

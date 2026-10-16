@@ -227,6 +227,8 @@ def _pair_step(pair, primary, refresh_signal, ask_brain, cfg, setup) -> dict:
                                       edge=d.get("edge"), reason=d.get("reason") or r.get("reason"),
                                       detail={"explain": d.get("explain"), "skipped": r.get("skipped"),
                                               "order_type": d.get("order_type"),
+                                              "interval": d.get("interval"), "chain": d.get("chain"),
+                                              "htf_ctx": d.get("htf_ctx"),
                                               "outlay_quote": d.get("outlay_quote")})
         except Exception:
             pass

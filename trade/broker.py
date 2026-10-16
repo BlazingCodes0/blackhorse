@@ -105,6 +105,7 @@ def decide(verdict=None, pair=None) -> dict:
     return {
         "action": d["action"], "channel": d.get("channel"), "profile": best["profile"],
         "agent": best["agent"], "entry": d.get("entry"), "stop": d.get("stop"),
+        "interval": d.get("interval"), "edge": d.get("edge"),
         "target": d.get("target"), "size_quote": d.get("size_quote"),
         "risk_quote": d.get("risk_quote"), "rr": d.get("rr"),
         "score": d.get("score"),
@@ -194,6 +195,7 @@ def decide_all(verdict=None, pair=None) -> dict:
                     approved.append({"agent": a["id"], "name": a.get("name"), "profile": a.get("profile"),
                                      "mode": str(a.get("mode") or "PAPER").upper(),
                                      "action": d["action"], "channel": d.get("channel"), "entry": d.get("entry"),
+                                     "interval": d.get("interval"), "edge": d.get("edge"),
                                      "stop": d.get("stop"), "target": d.get("target"), "size_quote": d.get("size_quote"),
                                      "order_type": d.get("order_type"), "expiry_s": d.get("expiry_s"),
                                      "outlay_quote": d.get("outlay_quote"), "fee_reserve_pct": d.get("fee_reserve_pct"),

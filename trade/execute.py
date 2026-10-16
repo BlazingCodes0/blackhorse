@@ -151,7 +151,7 @@ def execute(plan: dict, pair: str = None, mode: str = None) -> dict:
     qty = size_quote / fill
     agent = plan.get("agent", "house")
     ch = plan.get("channel") or ""
-    interval = {"ripple": "60m", "wave": "240m", "tide": "1440m", "wave15": "15m", "ripple5": "5m", "tide60": "60m"}.get(str(ch).lower(), None)
+    interval = plan.get("interval") or (plan.get("edge") or {}).get("interval")
     edge_cell = f"{interval or '?'}{plan['action']}"
     pos = portfolio.open_position(agent=agent, pair=pair or "DOT/USD", side=plan["action"],
                                   entry=fill, qty=qty, stop=plan.get("stop"),
