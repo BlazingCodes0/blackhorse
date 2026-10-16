@@ -25,40 +25,6 @@ BH = Path.home() / "blackhorse"
 GREEN, RED, GREY, AMBER = "#16a34a", "#dc2626", "#9ca3af", "#d97706"
 
 
-def _intervals_to_slots(intervals):
-    iv = [str(x).strip() for x in (intervals or [])]
-    has5 = any(x == '5m' for x in iv)
-    slots = []
-    for x in iv:
-        if x == '5m':
-            slots.append('ripple5')
-        elif x == '15m':
-            slots.append('wave15' if has5 else 'ripple')
-        elif x == '60m':
-            slots.append('tide60' if has5 else 'wave')
-        elif x == '240m' or x == '1440m':
-            slots.append('tide')
-        else:
-            slots.append(x)
-    seen = set(); out = []
-    for s in slots:
-        if s not in seen:
-            seen.add(s); out.append(s)
-    return out
-
-
-def _slots_to_intervals(slots):
-    m = {'ripple':'15m','wave':'60m','tide':'240m','ripple5':'5m','wave15':'15m','tide60':'60m'}
-    iv = []
-    for s in (slots or []):
-        iv.append(m.get(s, s))
-    seen = set(); out = []
-    for x in iv:
-        if x not in seen:
-            seen.add(x); out.append(x)
-    return out
-
-
 INTV = ["5m", "15m", "60m", "240m", "1440m"]
 _IVMIN = {"5m": 5, "15m": 15, "60m": 60, "240m": 240, "1440m": 1440}
 
@@ -179,6 +145,13 @@ SETTINGS = [
          "ON = refuse any interval+side the measured fee-honest edge report hasn't PROVEN. "
          "OFF = trade the setup anyway — your risk. Default OFF for every agent."),
     ]),
+    ("Strength climb gate", [
+        ("star_alignment", "Require entry lane eligible (star alignment)", "bool", "policy",
+         "OFF (default) = the climb only checks that each rung's strength sits in its zone. "
+         "ON = an extra gate: the ENTRY lane's own signal must actually be entryEligible to buy / "
+         "exitEligible to sell, while the rungs only need to be in their zone. Ignored when the "
+         "climb is off (no rungs listed)."),
+    ]),
     ("Where it trades", [
         ("pairs", "Pairs", "list", "agent", "Comma list, e.g. DOT/USD,ETH/USD. Empty = every pair."),
         ("mode", "Mode", "combo:PAPER,LIVE", "agent",
@@ -186,14 +159,15 @@ SETTINGS = [
          "LIVE = it sends real orders to the venue. Per agent, independent of the others."),
         ("strategy", "Strategy", "combo:swing,daytrade,custom", "policy", "Interval combo (editable). swing/daytrade are examples."),
         ("intervals", "Intervals", "list", "policy", "SMALLEST = the entry (trading) lane. "
-         "Every OTHER interval listed becomes a strength-chain rung (60m -> 240m -> 1440m) "
-         "that must clear its own band before this agent may buy/sell. Listing an interval "
-         "turns its rung ON; removing it turns it OFF. e.g. 15m,60m,240m — or just 15m for "
-         "the default 60m gate."),
+         "Every OTHER interval listed becomes a strength-chain rung that must sit in its own "
+         "range before this agent may buy/sell. Listing an interval turns its rung ON; removing "
+         "it turns it OFF. e.g. 15m,60m,240m — dynamic: any interval you list becomes a rung "
+         "with its own editable buy/sell range."),
         ("capital", "Capital $", "float", "agent", "Budget this agent may size from (bounded by real free cash)."),
     ]),
     ("Entry (buy)", [
-        ("entry_strength_max", "Buy when strength ≤", "float", "policy", "0 = floor, 1 = roof."),
+        ("entry_strength_max", "Entry buy range top (≤)", "float", "policy",
+         "Entry lane buys when its strength is inside [0, this]. 0 = floor only, 1 = whole range."),
         ("entry_order_type", "Order type", "combo:limit,market", "policy", "limit = rests at the entry price (maker fee)."),
         ("entry_expiry_seconds", "Limit expires (s)", "int", "policy", "Unfilled limit orders are cancelled after this."),
         ("min_reward_risk", "Min R:R", "float", "policy", "Target distance vs invalidation distance."),
@@ -203,7 +177,8 @@ SETTINGS = [
          "Caps how far the structural stop sits from entry. Used only if you enable stop loss."),
     ]),
     ("Exit (sell) — profit exit", [
-        ("exit_strength_min", "Sell zone strength ≥", "float", "policy", "Strategy 'sell time' band."),
+        ("exit_strength_min", "Entry sell range floor (≥)", "float", "policy",
+         "Entry lane sells when its strength is inside [this, 1]."),
         ("exit_min_net_pct", "Min net profit %", "float", "policy", "After entry fee paid + taker exit fee."),
         ("exit_price_sets", "Stored price sets", "list", "policy", "average, perfected, median, sweet."),
     ]),
@@ -322,6 +297,9 @@ def load_agent_decisions(agent_id, limit=25):
         d["skipped"] = det.get("skipped")
         d["order_type"] = det.get("order_type")
         d["outlay_quote"] = det.get("outlay_quote")
+        d["interval"] = d.get("interval") or det.get("interval")
+        d["chain"] = det.get("chain") or []
+        d["htf_ctx"] = det.get("htf_ctx")
         out.append(d)
     return out
 
@@ -337,13 +315,18 @@ def load_signal(pair=None):
 
 
 def _signal_channels(sig):
-    """Ordered, interval-deduped channels from a snapshot."""
+    """Ordered, interval-deduped channels from a snapshot (shortest interval first)."""
     chans = (sig or {}).get("channels") or {}
-    order = ["ripple", "wave", "tide", "wave15", "ripple5", "tide60"]
-    names = [n for n in order if n in chans] + [n for n in chans if n not in order]
+    def _rank(item):
+        _n, c = item
+        try:
+            s = str((c or {}).get("interval") or "")
+            return int(s[:-1]) if s.endswith("m") and s[:-1].isdigit() else 10 ** 9
+        except Exception:
+            return 10 ** 9
     seen, out = set(), []
-    for name in names:
-        c = chans.get(name) or {}
+    for name, c in sorted(chans.items(), key=_rank):
+        c = c or {}
         iv = str(c.get("interval") or name)
         if iv in seen:
             continue
@@ -471,13 +454,15 @@ def _scenarios_html(sig):
 
 
 def strength_chain(pol, sig):
-    """This agent's strength climb, read live from the current snapshot — NO network.
+    """This agent's strength climb, read from the current snapshot — NO network.
 
     The entry lane is the smallest listed interval; every other listed interval is
     a climb rung that must clear its own band. Uses the decider's OWN pure helpers
-    (trade/decider.py::_chain_from / _entry_lane / _rung_bands / _strength) so the
-    panel shows exactly what the trader sees. A rung with no lane in the snapshot
-    is marked not-in-snapshot (the decider pulls it live from candles)."""
+    (trade/decider.py::_chain_from / _entry_lane / _bands / _strength) so the panel
+    shows exactly what the trader sees. A rung with no lane in the snapshot is
+    PULLED LIVE by the decider from candles each cycle — we surface the trader's
+    own logged read (last decision's chain) for it, so it shows block/buy, not a
+    bare placeholder. Lanes are matched by INTERVAL, never by channel name."""
     chans = (sig or {}).get("channels") or {}
     if not chans:
         return None
@@ -490,35 +475,63 @@ def strength_chain(pol, sig):
         return None
     try:
         cfg = dict(pol or {})
+        star = bool(cfg.get("star_alignment", False))
         chain = _d._chain_from(cfg, chans)
         entry_iv = chain["entry"]
-        en, ec = _d._entry_lane(chans, cfg, entry_iv)
-        em_e = float(cfg.get("entry_strength_max", 0.25))
-        xm_e = float(cfg.get("exit_strength_min", 0.75))
+        en, ec = _d._lane_for_interval(chans, entry_iv)
+        eb = _d._bands(cfg, entry_iv, entry=True)        # entry lane's own range
         e_s = _d._strength((ec or {}).get("strength")) if ec else None
+        e_buy = e_s is not None and _d._in(e_s, eb["buy"])
+        e_sell = e_s is not None and _d._in(e_s, eb["sell"])
+        # the trader's own live pulls from its last cycle, keyed by interval
+        logged = {}
+        try:
+            aid = (cfg.get("_agent") or {}).get("id")
+            if aid:
+                decs = load_agent_decisions(aid, 1)
+                for read in (decs[0].get("chain") if decs else None) or []:
+                    logged[str(read.get("interval"))] = read
+        except Exception:
+            logged = {}
         out = {"entry": {"interval": entry_iv, "channel": en, "present": ec is not None,
-                         "strength": e_s, "entry_max": em_e, "exit_min": xm_e,
-                         "buy_ok": (e_s is not None and e_s <= em_e),
-                         "sell_ok": (e_s is not None and e_s >= xm_e)},
-               "rungs": [], "chain_used": bool(chain["rungs"])}
+                         "strength": e_s, "buy_range": list(eb["buy"]), "sell_range": list(eb["sell"]),
+                         "buy_ok": e_buy, "sell_ok": e_sell, "live": False,
+                         "eligible_buy": bool((ec or {}).get("entryEligible")) if ec else None,
+                         "eligible_sell": bool((ec or {}).get("exitEligible")) if ec else None},
+               "rungs": [], "chain_used": bool(chain["rungs"]), "star": star}
         for r in chain["rungs"]:
-            rn, rc = _d._entry_lane(chans, {}, r)        # any lane carrying that interval
-            em, xm = _d._rung_bands(cfg, r)
-            g = _d._strength((rc or {}).get("strength")) if rc else None
-            out["rungs"].append({"interval": r, "channel": rn, "present": rc is not None,
-                                 "strength": g, "entry_max": em, "exit_min": xm,
-                                 "buy_ok": (g is not None and g <= em),
-                                 "sell_ok": (g is not None and g >= xm)})
-        present = [x for x in out["rungs"] if x["present"]]
-        out["absent"] = [x["interval"] for x in out["rungs"] if not x["present"]]
+            rn, rc = _d._lane_for_interval(chans, r)     # any lane carrying that interval
+            rb = _d._bands(cfg, r)                       # rung's own dynamic range
+            if rc is not None:
+                g = _d._strength(rc.get("strength"))
+                out["rungs"].append({"interval": r, "channel": rn, "present": True, "live": False,
+                                     "strength": g, "buy_range": list(rb["buy"]),
+                                     "sell_range": list(rb["sell"]),
+                                     "buy_ok": (g is not None and _d._in(g, rb["buy"])),
+                                     "sell_ok": (g is not None and _d._in(g, rb["sell"]))})
+            else:                                        # no snapshot lane -> trader's live pull
+                lr = logged.get(r) or {}
+                g = lr.get("strength")
+                out["rungs"].append({"interval": r, "channel": lr.get("source"), "present": False,
+                                     "live": bool(lr), "strength": g,
+                                     "buy_range": lr.get("buy_range") or list(rb["buy"]),
+                                     "sell_range": lr.get("sell_range") or list(rb["sell"]),
+                                     "buy_ok": lr.get("buy_allowed") if lr else None,
+                                     "sell_ok": lr.get("sell_allowed") if lr else None})
+        out["absent"] = [x["interval"] for x in out["rungs"] if not x["present"] and not x["live"]]
         if out["chain_used"]:
-            out["buy_all"] = all(x["buy_ok"] for x in present) if present else None
-            out["sell_all"] = all(x["sell_ok"] for x in present) if present else None
-            out["gauge"] = present[-1] if present else out["entry"]
+            # match the decider: entry lane first, then EVERY rung (unknown = fail-closed)
+            out["buy_all"] = e_buy and all(bool(x["buy_ok"]) for x in out["rungs"])
+            out["sell_all"] = e_sell and all(bool(x["sell_ok"]) for x in out["rungs"])
+            out["gauge"] = next((x for x in reversed(out["rungs"]) if x["strength"] is not None),
+                                out["entry"])
         else:
-            out["buy_all"] = out["entry"]["buy_ok"]
-            out["sell_all"] = out["entry"]["sell_ok"]
+            out["buy_all"] = e_buy
+            out["sell_all"] = e_sell
             out["gauge"] = out["entry"]
+        if star:                                          # extra entry-eligibility gate
+            out["buy_all"] = out["buy_all"] and bool(out["entry"]["eligible_buy"])
+            out["sell_all"] = out["sell_all"] and bool(out["entry"]["eligible_sell"])
         return out
     except Exception:
         return None
@@ -529,32 +542,47 @@ def _chain_html(chain):
         return f"<i style='color:{GREY}'>No SignalBot snapshot to read the chain from yet.</i>"
     e = chain["entry"]
 
-    def cell(ok):
-        if ok is None:
-            return f"<td style='color:{AMBER}'>live</td>"
+    def cell(ok, judged=True):
+        if not judged or ok is None:
+            return f"<td style='color:{AMBER}'>—</td>"
         return (f"<td style='color:{GREEN if ok else RED}'>{'ALLOW' if ok else 'block'}</td>")
 
+    def rng(r):
+        return f"[{_num(r['buy_range'][0], 2)}–{_num(r['buy_range'][1], 2)}]"
+
+    def rngs(r):
+        return f"[{_num(r['sell_range'][0], 2)}–{_num(r['sell_range'][1], 2)}]"
+
     rows = [f"<table cellpadding='4'><tr style='color:{GREY}'><td>lane</td><td>strength</td>"
-            f"<td>BUY ≤</td><td>SELL ≥</td><td>buy</td><td>sell</td></tr>"]
+            f"<td>BUY range</td><td>SELL range</td><td>buy</td><td>sell</td></tr>"]
     e_src = f" · {e['channel']}" if e["channel"] else " · not in snapshot"
-    rows.append(f"<tr><td><b>{e['interval']}</b> entry lane{e_src}</td>"
+    elig = ""
+    if chain.get("star") and e["present"]:
+        eb = "elig" if e.get("eligible_buy") else "not elig"
+        xb = "elig" if e.get("eligible_sell") else "not elig"
+        elig = (f" <span style='color:{GREY}'>· entry {eb} / exit {xb}</span>")
+    rows.append(f"<tr><td><b>{e['interval']}</b> entry lane{e_src}{elig}</td>"
                 f"<td>{_num(e['strength'], 3) if e['present'] else '—'}</td>"
-                f"<td>{_num(e['entry_max'], 2)}</td><td>{_num(e['exit_min'], 2)}</td>"
-                f"{cell(e['buy_ok'] if e['present'] else None)}{cell(e['sell_ok'] if e['present'] else None)}</tr>")
+                f"<td>{rng(e)}</td><td>{rngs(e)}</td>"
+                f"{cell(e['buy_ok'], e['present'])}{cell(e['sell_ok'], e['present'])}</tr>")
     for r in chain["rungs"]:
-        src = f" · {r['channel']}" if r["channel"] else " · not in snapshot"
+        if r["present"]:
+            src = f" · {r['channel']}"
+        elif r.get("live"):
+            src = f" <span style='color:{AMBER}'>· live: {r['channel'] or 'pulled from candles'}</span>"
+        else:
+            src = " · not in snapshot"
+        judged = r["present"] or r.get("live")
         rows.append(f"<tr><td>&nbsp;&nbsp;↳ rung {r['interval']}{src}</td>"
-                    f"<td>{_num(r['strength'], 3) if r['present'] else '—'}</td>"
-                    f"<td>{_num(r['entry_max'], 2)}</td><td>{_num(r['exit_min'], 2)}</td>"
-                    f"{cell(r['buy_ok'] if r['present'] else None)}"
-                    f"{cell(r['sell_ok'] if r['present'] else None)}</tr>")
+                    f"<td>{_num(r['strength'], 3) if judged else '—'}</td>"
+                    f"<td>{rng(r)}</td><td>{rngs(r)}</td>"
+                    f"{cell(r['buy_ok'], judged)}{cell(r['sell_ok'], judged)}</tr>")
     rows.append("</table>")
 
     g = chain["gauge"]
     if not chain["chain_used"]:
         summary = (f"<b>Climb is OFF</b> — this agent trades its entry lane on its own strength "
-                   f"(no rungs listed). Entry band: buy ≤ {_num(e['entry_max'], 2)}, "
-                   f"sell ≥ {_num(e['exit_min'], 2)}.")
+                   f"(no rungs listed). Entry range: buy {rng(e)}, sell {rngs(e)}.")
     else:
         buy = ("ALLOW" if chain["buy_all"] else "BLOCKED") if chain["buy_all"] is not None else "unknown"
         sell = ("ALLOW" if chain["sell_all"] else "BLOCKED") if chain["sell_all"] is not None else "unknown"
@@ -563,10 +591,16 @@ def _chain_html(chain):
         summary = (f"<b>Climb ON</b> — BUY through the rungs is <b style='color:{bc}'>{buy}</b>, "
                    f"SELL is <b style='color:{sc}'>{sell}</b>. Acting gauge = {g['interval']} "
                    f"strength {_num(g['strength'], 3)}.")
+        live = [x["interval"] for x in chain["rungs"] if not x["present"] and x.get("live")]
+        if live:
+            summary += (f" <span style='color:{GREY}'>Rungs {', '.join(live)} have no snapshot lane — "
+                        f"shown from the trader's live candle pull last cycle.</span>")
         if chain["absent"]:
-            summary += (f" <span style='color:{AMBER}'>Rungs {', '.join(chain['absent'])} have no lane "
-                        f"in the snapshot — the decider pulls those live from candles, so they are not "
-                        f"judged here.</span>")
+            summary += (f" <span style='color:{AMBER}'>Rungs {', '.join(chain['absent'])} are not in the "
+                        f"snapshot and have no live read yet — judged fail-closed.</span>")
+    if chain.get("star"):
+        summary += (f" <span style='color:{GREY}'>Star alignment is ON — the entry lane must also be "
+                    f"entryEligible/exitEligible.</span>")
     return "".join(rows) + f"<p style='color:{GREY}'>{summary}</p>"
 
 
@@ -844,20 +878,22 @@ class AgentsMixin:
         last = (f"<b>{d['action']}</b> — {d.get('reason') or ''} <span style='color:{GREY}'>({_ago(d['ts'])})</span>"
                 if d else f"<span style='color:{GREY}'>no decision recorded yet</span>")
         ivs = pol.get("strategy_intervals") or []
-        entry = ivs[0] if ivs else pol.get("channels", [""])[0]
+        entry = ivs[0] if ivs else "—"
         climb = ", ".join(ivs[1:]) if len(ivs) > 1 else "off — trades on its own strength"
         rows = [("Status", f"<b style='color:{GREEN if on else GREY}'>{'ENABLED' if on else 'disabled'}</b>"),
                 ("Entry interval", f"<b>{entry}</b> · climb: {climb}"),
                 ("Mode", f"<b>{a.get('mode') or '-'}</b>"),
                 ("Capital (total budget)", f"${a.get('capital')}" + self._budget_html(a["id"])),
                 ("Pairs", ", ".join(a.get("pairs") or []) or "all pairs"),
-                ("Channels", ", ".join(pol.get("channels") or []) or "—"),
                 ("Require edge proof",
                  "<b>" + ("ON — only PROVEN cells" if pol.get("require_proven_edge", False)
                           else "OFF — trades unproven setups") + "</b>"),
-                ("Buy when strength ≤", pol.get("entry_strength_max")),
+                ("Buy range (entry lane)", f"[0 – {pol.get('entry_strength_max')}]" if pol.get("entry_strength_max") is not None else "—"),
                 ("Entry order", f"{pol.get('entry_order_type', 'limit')} (expires {pol.get('entry_expiry_seconds', '-')}s)"),
-                ("Sell zone strength ≥", pol.get("exit_strength_min")),
+                ("Sell range (entry lane)", f"[{pol.get('exit_strength_min')} – 1]" if pol.get("exit_strength_min") is not None else "—"),
+                ("Star alignment",
+                 "<b>" + ("ON — entry lane must be eligible" if pol.get("star_alignment", False)
+                          else "OFF — strength zones only") + "</b>"),
                 ("Min net profit to sell", f"{pol.get('exit_min_net_pct', '-')}%  · stored sets: {', '.join(pol.get('exit_price_sets') or [])}"),
                 ("Stop loss",
                  ("<b style='color:%s'>ON</b> — %s" % (AMBER, pol.get("stop_mode", "price_watch")))
@@ -898,6 +934,7 @@ class AgentsMixin:
         page = QWidget()
         pv = QVBoxLayout(page)
         self._agent_fields = {}
+        self._rung_fields = {}
         # Entry lane & strength climb — the interval buttons ARE the profiles.
         pv.addWidget(self._build_interval_block(a, pol))
         for title, fields in SETTINGS:
@@ -955,7 +992,7 @@ class AgentsMixin:
         self._interval_pol = pol
         g = QGroupBox("Entry lane & strength climb — intervals are the profiles")
         box = QVBoxLayout(g)
-        iv = [x for x in (pol.get('strategy_intervals') or _slots_to_intervals(pol.get('channels') or []))
+        iv = [x for x in (pol.get('strategy_intervals') or [])
               if x in INTV]
         if not iv:
             iv = ['15m', '60m', '240m']
@@ -1054,36 +1091,42 @@ class AgentsMixin:
         active = sorted([x for x in self._interval_on if _ivmin(x) > _ivmin(self._interval_entry)],
                         key=_ivmin)
         entry = self._interval_entry
+        self._rung_fields = {}
         if active:
             names = ", ".join(active)
             self._interval_status.setText(
                 f"<b>{entry}</b> is the entry lane (the one this agent trades). Climb ON: <b>{names}</b> — "
-                f"before {entry} may buy or sell, each rung must sit in its own band (buy ≤ / sell ≥). "
+                f"before {entry} may buy or sell, each rung must sit in its own buy/sell RANGE. "
                 f"Click a larger interval to add or remove it from the climb.")
         else:
             self._interval_status.setText(
                 f"<b>{entry}</b> is the entry lane and the climb is <b>off</b> — it trades on its own "
                 f"strength alone. Click a larger interval above to add a climb rung.")
         for x in active:
+            old = (self._interval_pol.get('rung_bands') or {}).get(x) or {}
+            em = self._interval_pol.get('entry_strength_max_' + x,
+                                        self._interval_pol.get('entry_strength_max', 0.25))
+            xm = self._interval_pol.get('exit_strength_min_' + x,
+                                        self._interval_pol.get('exit_strength_min', 0.75))
+            old_buy = old.get('buy') or [0.0, em]
+            old_sell = old.get('sell') or [xm, 1.0]
             rr = QWidget()
             hb = QHBoxLayout(rr)
             hb.setContentsMargins(0, 0, 0, 0)
-            old_b = self._interval_pol.get('entry_strength_max_' + x)
-            old_s = self._interval_pol.get('exit_strength_min_' + x)
             lab = QLabel(f"{x} rung")
             lab.setMinimumWidth(70)
-            wb = QLineEdit('' if old_b is None else str(old_b))
-            ws = QLineEdit('' if old_s is None else str(old_s))
-            wb.setMinimumWidth(80)
-            ws.setMinimumWidth(80)
+            wblo = QLineEdit(str(old_buy[0])); wbhi = QLineEdit(str(old_buy[1]))
+            wslo = QLineEdit(str(old_sell[0])); wshi = QLineEdit(str(old_sell[1]))
+            for w in (wblo, wbhi, wslo, wshi):
+                w.setMinimumWidth(56)
             hb.addWidget(lab)
-            hb.addWidget(QLabel("buy ≤"))
-            hb.addWidget(wb)
-            hb.addWidget(QLabel("sell ≥"))
-            hb.addWidget(ws)
+            hb.addWidget(QLabel("buy ["))
+            hb.addWidget(wblo); hb.addWidget(QLabel("–")); hb.addWidget(wbhi)
+            hb.addWidget(QLabel("]  sell ["))
+            hb.addWidget(wslo); hb.addWidget(QLabel("–")); hb.addWidget(wshi)
+            hb.addWidget(QLabel("]"))
             hb.addStretch(1)
-            self._agent_fields['entry_strength_max_' + x] = (wb, 'float', 'policy', old_b)
-            self._agent_fields['exit_strength_min_' + x] = (ws, 'float', 'policy', old_s)
+            self._rung_fields[x] = (wblo, wbhi, wslo, wshi)
             self._rungs_box.addWidget(rr)
 
     def _apply_interval_defaults(self, iv):
@@ -1118,7 +1161,7 @@ class AgentsMixin:
             elif strat == 'daytrade':
                 iv_list = ['5m','15m','60m']
             else:
-                iv_list = _slots_to_intervals([]) or ['15m','60m','240m']
+                iv_list = ['15m','60m','240m']
         # normalize strategy label from intervals if it matches known sets
         ivs = iv_list
         if ivs == ['15m','60m','240m'] or sorted(ivs) == sorted(['15m','60m','240m']):
@@ -1127,9 +1170,7 @@ class AgentsMixin:
             strat_lbl = 'daytrade'
         else:
             strat_lbl = strat if strat in ('swing','daytrade') else 'custom'
-        # translate to slots
-        slots = _intervals_to_slots(ivs)
-        # write strategy/intervals/channels
+        # write strategy/intervals — intervals are the profiles; no channel names
         try:
             agents.set_override(aid, 'strategy_intervals', ivs)
             changed.append('intervals')
@@ -1140,9 +1181,8 @@ class AgentsMixin:
             changed.append('strategy')
         except Exception as e:
             errs.append(f'strategy:{e}')
-        try:
-            agents.set_override(aid, 'channels', slots)
-            changed.append('channels')
+        try:                                   # drop any legacy name-based 'channels'
+            agents.clear_override(aid, 'channels')
         except Exception as e:
             errs.append(f'channels:{e}')
         # handle other fields
@@ -1185,6 +1225,31 @@ class AgentsMixin:
                 changed.append(key)
             except Exception as e:
                 errs.append(f'{key}:{e}')
+        # strength-climb rung ranges -> one nested rung_bands dict, keyed by interval
+        try:
+            bands = {}
+
+            def _fv(w):
+                raw = w.text().strip()
+                if raw == '':
+                    return None
+                try:
+                    return float(raw)
+                except ValueError:
+                    return None
+
+            for x, (wblo, wbhi, wslo, wshi) in getattr(self, '_rung_fields', {}).items():
+                blo, bhi, slo, shi = _fv(wblo), _fv(wbhi), _fv(wslo), _fv(wshi)
+                if None in (blo, bhi, slo, shi):
+                    errs.append(f'rung {x}: enter all four range values (or none)')
+                    continue
+                bands[x] = {'buy': [min(blo, bhi), max(blo, bhi)],
+                            'sell': [min(slo, shi), max(slo, shi)]}
+            if bands != (self._interval_pol.get('rung_bands') or {}):
+                agents.set_override(aid, 'rung_bands', bands)
+                changed.append('rung_bands')
+        except Exception as e:
+            errs.append(f'rung_bands:{e}')
         if errs:
             self.ag_save_msg.setText(f"<span style='color:{RED}'>error — {'; '.join(errs)}</span>")
         else:

@@ -110,10 +110,14 @@ def _crowd() -> dict:
 
 def _summary(obs: dict) -> str:
     parts = []
-    for name in ("ripple", "wave", "tide"):
-        c = obs["channels"].get(name)
-        if not c:
-            continue
+    def _iv(name, c):
+        try:
+            s = str(c.get("interval") or "")
+            return int(s[:-1]) if s.endswith("m") and s[:-1].isdigit() else 10 ** 9
+        except Exception:
+            return 10 ** 9
+    chans = obs.get("channels") or {}
+    for name, c in sorted(chans.items(), key=lambda kv: _iv(*kv)):
         b = "n/a" if c["buy_missing"] else c["buy"]
         s = "n/a" if c["sell_missing"] else c["sell"]
         parts.append(f"{name} {c['interval']} {c['direction']} "

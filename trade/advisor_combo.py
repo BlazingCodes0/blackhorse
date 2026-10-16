@@ -1,5 +1,6 @@
-"""advisor_combo.py — blend adaBot advisor prices across [60,240,1440] into one
-buy/sell reference per pair. Missing/zero prices are excluded, never averaged.
+"""advisor_combo.py — blend adaBot advisor prices across ALL snapshot lanes into
+one buy/sell reference per pair. Missing/zero prices are excluded, never averaged.
+Lanes are anonymous: keyed by their own interval, never by a fixed channel name.
 
 CLI: python3 trade/advisor_combo.py [path_to_signal_latest.json]
 Output: logs/advisor_combo.json + stdout summary.
@@ -10,7 +11,16 @@ from pathlib import Path
 BH = Path.home() / "blackhorse"
 IN = Path(sys.argv[1]) if len(sys.argv) > 1 else BH / "logs" / "signal_latest.json"
 OUT = BH / "logs" / "advisor_combo.json"
-TFS = ["ripple", "wave", "tide"]  # 60m, 240m, 1440m
+
+
+def _iv_min(item):
+    _n, ch = item
+    try:
+        s = str((ch or {}).get("interval") or "")
+        return int(s[:-1]) if s.endswith("m") and s[:-1].isdigit() else 10 ** 9
+    except Exception:
+        return 10 ** 9
+
 
 def blend(vals):
     vals = [v for v in vals if isinstance(v, (int, float)) and v > 0]
@@ -18,11 +28,10 @@ def blend(vals):
 
 def main():
     d = json.loads(IN.read_text())
-    chans = d.get("channels", {})
+    chans = d.get("channels", {}) or {}
+    lanes = sorted(chans.items(), key=_iv_min)          # shortest interval first
     buys, sells, per_tf = [], [], {}
-    for name in TFS:
-        ch = chans.get(name)
-        if not ch: continue
+    for _name, ch in lanes:
         a = ch.get("advisor", {})
         per_tf[ch.get("interval")] = {"buy": a.get("buy"), "sell": a.get("sell"),
                                       "buy_missing": a.get("buy_missing"),
@@ -32,9 +41,7 @@ def main():
     buy, n_buy = blend(buys)
     sell, n_sell = blend(sells)
     avg_buys, avg_sells = [], []
-    for name in TFS:
-        ch = chans.get(name)
-        if not ch: continue
+    for _name, ch in lanes:
         a = ch.get("advisor", {}).get("prices", {}).get("average", {})
         if a.get("buy") and a["buy"] > 0: avg_buys.append(a["buy"])
         if a.get("sell") and a["sell"] > 0: avg_sells.append(a["sell"])
@@ -46,7 +53,7 @@ def main():
            "buy_tf_avg": round(ab, 6) if ab else None, "n_buy_avg": nab,
            "sell_tf_avg": round(as_, 6) if as_ else None, "n_sell_avg": nas,
            "per_tf": per_tf,
-           "currPrice": (chans.get("ripple") or {}).get("currPrice")}
+           "currPrice": (dict(lanes).get(lanes[0][0]) or {}).get("currPrice") if lanes else None}
     OUT.write_text(json.dumps(out, indent=2))
     print(json.dumps(out, indent=2))
 

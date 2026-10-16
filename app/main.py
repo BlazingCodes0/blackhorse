@@ -66,13 +66,14 @@ def _n(v, dp=4):
         return str(v)
 
 def _curr_price(chans):
-    """first real currPrice across channels (ripple first)"""
-    for name in ("ripple", "wave", "tide"):
-        c = chans.get(name) or {}
-        p = c.get("currPrice")
-        if p not in (None, "", 0):
-            return p
-    for c in chans.values():
+    """first real currPrice, cheapest interval first (lanes are interval-keyed)."""
+    def _iv(c):
+        try:
+            s = str((c or {}).get("interval") or "")
+            return int(s[:-1]) if s.endswith("m") and s[:-1].isdigit() else 10 ** 9
+        except Exception:
+            return 10 ** 9
+    for c in sorted(chans.values(), key=_iv):
         p = (c or {}).get("currPrice")
         if p not in (None, "", 0):
             return p
@@ -339,6 +340,10 @@ class BlackHorse(AgentsMixin, QMainWindow):
         self.dash_pnl_desc.setWordWrap(True)
         self.dash_pnl_desc.setStyleSheet("color:#9aa0a6")
         pc.addWidget(self.dash_pnl_desc)
+        self.dash_orders = QLabel("")
+        self.dash_orders.setFont(QFont("Monospace", 9))
+        self.dash_orders.setWordWrap(True)
+        pc.addWidget(self.dash_orders)
         v.addWidget(pnl_card)
 
         trade_card, tc = card("TRADE STATE")
@@ -373,9 +378,27 @@ class BlackHorse(AgentsMixin, QMainWindow):
                     for a, v in rows] or ["no positions yet \u2014 every agent at 0.0000"]
             self.dash_pnl_desc.setText("each agent's contribution \u2014 " + "\n".join(desc))
             self.dash_pnl.setToolTip("Contribution to total P&L by agent:\n" + "\n".join(desc))
+            opens = pnl.get("open_positions", [])
+            orow = []
+            for o in opens:
+                upl = o["unrealized"]
+                color = "#22c55e" if upl > 0 else ("#ef4444" if upl < 0 else "#9aa0a6")
+                tag = "win" if upl > 0 else ("loss" if upl < 0 else "flat")
+                base = o["entry"] * o["qty"]
+                pct = (upl / base * 100) if base else 0.0
+                txt = (f"{o['id']} {o['agent']} {o['side']} {o['qty']:.4f} "
+                       f"@{o['entry']:.4f}\u2192{o['mark']:.4f}  {upl:+.4f} ({pct:+.2f}%) {tag}")
+                orow.append(f"<span style='color:{color}'>{txt}</span>")
+            if orow:
+                self.dash_orders.setText("<span style='color:#9ca3af'>active orders "
+                                         "(open \u00b7 marked to last price)</span><br>"
+                                         + "<br>".join(orow))
+            else:
+                self.dash_orders.setText("<span style='color:#9ca3af'>active orders: none</span>")
         except Exception as e:
             self.dash_pnl.setText("\u2014")
             self.dash_pnl_desc.setText(f"P&L unavailable: {e}")
+            self.dash_orders.setText("")
         try:
             s = json.loads((BH/"logs"/"loop_state.json").read_text())
             if hasattr(self, 'loop_status'):
@@ -383,12 +406,31 @@ class BlackHorse(AgentsMixin, QMainWindow):
             sig_path = BH/"logs"/"signal_latest.json"
             sig = json.loads(sig_path.read_text()) if sig_path.exists() else {}
             ch = sig.get("channels", {})
-            ripple = ch.get("ripple", {})
-            tide = ch.get("tide", {})
+
+            def _ivmin_c(c):
+                try:
+                    s = str((c or {}).get("interval") or "")
+                    return int(s[:-1]) if s.endswith("m") and s[:-1].isdigit() else 10 ** 9
+                except Exception:
+                    return 10 ** 9
+            _lanes = sorted(ch.values(), key=_ivmin_c)
+            entry = _lanes[0] if _lanes else {}
+            htf = _lanes[-1] if _lanes else {}
+
+            def _trend(c):
+                return c.get("trendState") or (c.get("marketResult") or {}).get("trendState") or "?"
+
+            def _level(c, side):
+                adv = c.get("advisor") or {}
+                val = adv.get(side)
+                if adv.get(f"{side}_missing") or val in (None, 0):
+                    return f"\u2014 (interval has no {side} level)"
+                return val
+
             lines = [
               f"loop: {'ok' if s.get('heartbeat')=='ok' else 'halted'} \u00b7 interval {s.get('ts','?')[11:16]} \u00b7 decision {s.get('decision')} \u2014 {s.get('reason')}",
-              f"bot signal: {sig.get('pair','?')} @ {ripple.get('currPrice')} \u00b7 60m str {ripple.get('strength')} \u00b7 trend {ripple.get('trendState')} \u00b7 signal {ripple.get('rangeSignal')}",
-              f"tide(1440m): trend {tide.get('trendState')} \u00b7 rangeSignal {tide.get('rangeSignal')} \u00b7 buy ticking at {tide.get('advisor',{}).get('buy')}",
+              f"bot signal: {sig.get('pair','?')} @ {entry.get('currPrice')} \u00b7 {entry.get('interval','?')} str {entry.get('strength')} \u00b7 trend {_trend(entry)} \u00b7 signal {entry.get('rangeSignal')}",
+              f"HTF {htf.get('interval','?')}: trend {_trend(htf)} \u00b7 rangeSignal {htf.get('rangeSignal')} \u00b7 buy {_level(htf,'buy')} \u00b7 sell {_level(htf,'sell')}",
               f"marks: {[m.get('closed') if isinstance(m,dict) else m for m in s.get('marks',[])]}",
             ]
             hb = BH/"logs"/"heart_orders.json"

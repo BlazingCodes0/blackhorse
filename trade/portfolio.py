@@ -66,12 +66,19 @@ def pnl_by_agent() -> dict:
         return out.setdefault(a or "house",
                               {"realized": 0.0, "unrealized": 0.0, "open": 0, "closed": 0})
 
+    opens = []
     for p in d.get("positions", []):
         r = row(p.get("agent"))
         mark = p.get("mark") if p.get("mark") is not None else p.get("entry")
         mult = 1 if str(p.get("side")).upper() == "BUY" else -1
-        r["unrealized"] += (float(mark) - float(p["entry"])) * float(p["qty"]) * mult
+        upl = (float(mark) - float(p["entry"])) * float(p["qty"]) * mult
+        r["unrealized"] += upl
         r["open"] += 1
+        opens.append({"id": p.get("id"), "agent": p.get("agent") or "house",
+                      "pair": p.get("pair"), "side": str(p.get("side") or "").upper(),
+                      "entry": float(p["entry"]), "mark": float(mark),
+                      "qty": float(p["qty"]), "mode": p.get("mode"),
+                      "unrealized": round(upl, 8)})
     try:
         import store
         store.init()
@@ -88,6 +95,7 @@ def pnl_by_agent() -> dict:
         a["unrealized"] = round(a["unrealized"], 8)
         a["total"] = round(a["realized"] + a["unrealized"], 8)
     return {"agents": out,
+            "open_positions": opens,
             "realized": round(sum(a["realized"] for a in out.values()), 8),
             "unrealized": round(sum(a["unrealized"] for a in out.values()), 8),
             "total": round(sum(a["total"] for a in out.values()), 8)}
@@ -136,6 +144,11 @@ def mark(pair: str, price: float) -> list:
     for p in list(d["positions"]):
         if p["pair"] != pair:
             continue
+        # Refresh the mark for EVERY open order so unrealized P&L is honest, LIVE
+        # included. exits.py still owns real-money exits; this only marks to market.
+        for q in d["positions"]:
+            if q["id"] == p["id"]:
+                q["mark"] = price
         if p.get("mode") == "LIVE":
             continue          # NO STOPS / ledger-only exits for real money: exits.py sells for real
         # When the owning agent has the opt-in stop engine ON, exits.manage() owns the
@@ -159,13 +172,7 @@ def mark(pair: str, price: float) -> list:
                 reason = "target"
         if reason:
             hit.append((reason, p["id"]))
-        else:
-            # just update the mark
-            for q in d["positions"]:
-                if q["id"] == p["id"]:
-                    q["mark"] = price
-    if not hit:
-        _save(d)
+    _save(d)                      # persist refreshed marks before any close
     for reason, pos_id in hit:
         close_position(pos_id, price, reason)
     return [{"id": pos_id, "reason": r, "price": price} for r, pos_id in hit]

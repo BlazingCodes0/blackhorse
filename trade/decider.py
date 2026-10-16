@@ -11,7 +11,7 @@ Your rules live in config/decider.json (data, not code):
   entry_strength_max   (strength near 0 = buy zone)
   exit_strength_min    (strength near 1 = sell zone)
   min_reward_risk, stop_max_pct, risk_per_trade_pct, max_position_pct, fee_pct_per_side
-  require_tide_context (HTF confirmation)
+  require_htf_context (context confirmation; legacy require_tide_context still read)
 
 Status: UNVALIDATED. The rules are a hypothesis. Nothing here is proven until a
 fee-honest out-of-sample backtest says so. Paper only.
@@ -35,7 +35,7 @@ def _cfg() -> dict:
     defaults = {"risk_per_trade_pct": 1.0, "max_position_pct": 10.0,
                 "entry_strength_max": 0.25, "exit_strength_min": 0.75,
                 "min_reward_risk": 1.5, "stop_max_pct": 3.0,
-                "fee_pct_per_side": 0.80, "require_tide_context": True}
+                "fee_pct_per_side": 0.80, "require_htf_context": True}
     try:
         return {**defaults, **json.loads(CFG.read_text())}
     except (json.JSONDecodeError, OSError):
@@ -103,14 +103,40 @@ def _iv_minutes(iv):
         return None
 
 
-def _slots_intervals(slots) -> list:
-    """Channel slots -> interval labels (mirror of the GUI's mapping)."""
-    m = {"ripple": "15m", "wave": "60m", "tide": "240m",
-         "ripple5": "5m", "wave15": "15m", "tide60": "60m"}
+def _lane_for_interval(channels, iv):
+    """(name, chan) of the snapshot lane carrying interval `iv`, else (None, None).
+    Channels are ANONYMOUS lanes: only their own 'interval' field identifies them —
+    the channel name (ripple/wave/tide/...) means nothing and is never mapped."""
+    for n, c in (channels or {}).items():
+        if str((c or {}).get("interval")) == str(iv):
+            return n, c
+    return None, None
+
+
+def _htf_lane(channels):
+    """(name, chan) carrying the HIGHEST interval in the snapshot, else (None, None).
+    This is the market-context lane (what the config used to call 'tide')."""
+    best, bm = (None, None), -1
+    for n, c in (channels or {}).items():
+        m = _iv_minutes((c or {}).get("interval"))
+        if m is not None and m > bm:
+            bm, best = m, (n, c)
+    return best
+
+
+def _intervals_of(slots, channels) -> list:
+    """User-defined intervals from a mixed list. Each entry is either an interval
+    label ('60m') or a snapshot CHANNEL NAME — a name is resolved to that lane's
+    OWN interval, never to a fixed assumption. Unresolvable names are dropped."""
     seen, out = set(), []
     for s in (slots or []):
-        v = m.get(str(s), str(s))
-        if v not in seen:
+        v = str(s or "")
+        if not v:
+            continue
+        if _iv_minutes(v) is None:                       # not '<n>m' -> treat as a lane name
+            c = (channels or {}).get(v)
+            v = str((c or {}).get("interval")) if c else ""
+        if v and v not in seen:
             seen.add(v); out.append(v)
     return out
 
@@ -124,10 +150,10 @@ def _chain_from(cfg: dict, channels: dict) -> dict:
     interval, the lane trades on its own strength alone (climb off)."""
     ivs = cfg.get("strategy_intervals")
     if not isinstance(ivs, list) or not ivs:
-        ivs = _slots_intervals(cfg.get("channels"))
+        ivs = _intervals_of(cfg.get("channels"), channels)   # legacy names -> their own intervals
     if not ivs:                                  # nothing configured at all (e.g. bare
-        ivs = ["15m", "60m", "240m"]             # --explain): the classic owner trio
-    ivs = [str(x) for x in ivs]
+        ivs = ["15m"]                            # --explain): a single flat lane, NO
+    ivs = [str(x) for x in ivs]                  # hidden rungs (climb off)
 
     def _key(x):
         m = _iv_minutes(x)
@@ -194,15 +220,44 @@ def _rung_read(channels: dict, cfg: dict, pair, rung_iv: str):
     return None, "unavailable"
 
 
-def _rung_bands(cfg: dict, rung_iv: str):
-    """Per-rung buy/sell bands from the GUI keys (…_60m / …_240m / …_1440m),
-    else the agent's global entry_strength_max / exit_strength_min."""
-    em = cfg.get(f"entry_strength_max_{rung_iv}", cfg.get("entry_strength_max", 0.25))
-    xm = cfg.get(f"exit_strength_min_{rung_iv}", cfg.get("exit_strength_min", 0.75))
+def _mk_range(v, lo_def, hi_def) -> tuple:
+    """A [lo, hi] strength range from a 2-list; falls back to the defaults."""
     try:
-        return float(em), float(xm)
+        lo, hi = float(v[0]), float(v[1])
+        return (min(lo, hi), max(lo, hi))
+    except (TypeError, ValueError, IndexError, KeyError):
+        return (float(lo_def), float(hi_def))
+
+
+def _in(v, rng) -> bool:
+    """Is strength v inside the [lo, hi] range (inclusive)?"""
+    try:
+        return float(rng[0]) <= float(v) <= float(rng[1])
+    except (TypeError, ValueError, IndexError):
+        return False
+
+
+def _bands(cfg: dict, iv: str = None, entry: bool = False) -> dict:
+    """Buy/sell STRENGTH RANGES for one interval — dynamic by the interval label.
+
+    Resolution (so naming is dynamic like the entry interval itself):
+      1. cfg['rung_bands'][iv] = {"buy": [lo, hi], "sell": [lo, hi]}  (nested, any interval)
+      2. rungs also honour the legacy single keys entry_strength_max_<iv> /
+         exit_strength_min_<iv>; the entry lane uses the agent globals.
+      3. derived from the single: buy = [0, entry_max], sell = [exit_min, 1].
+    A strength anywhere inside the buy range is buy-favour; any inside the sell
+    range is sell-favour. Returns {"buy": (lo, hi), "sell": (lo, hi)}."""
+    rb = (cfg.get("rung_bands") or {}).get(str(iv)) or {}
+    g_em = cfg.get("entry_strength_max", 0.25)
+    g_xm = cfg.get("exit_strength_min", 0.75)
+    em = g_em if (entry or iv is None) else cfg.get(f"entry_strength_max_{iv}", g_em)
+    xm = g_xm if (entry or iv is None) else cfg.get(f"exit_strength_min_{iv}", g_xm)
+    try:
+        em = float(em); xm = float(xm)
     except (TypeError, ValueError):
-        return float(cfg.get("entry_strength_max", 0.25)), float(cfg.get("exit_strength_min", 0.75))
+        em, xm = float(g_em), float(g_xm)
+    return {"buy": _mk_range(rb.get("buy"), 0.0, em),
+            "sell": _mk_range(rb.get("sell"), xm, 1.0)}
 
 
 def _last_verdict():
@@ -236,6 +291,7 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
     treasury = treasury if treasury is not None else _treasury()
     cfg = cfg or _cfg()
     reasons = []
+    chain_reads = []
     # SPOT-ONLY: a SELL is only possible if we already hold inventory (no shorting).
     spot_only = cfg.get("spot_only", True)
     # the measured edge (evidence-first). Every plan must cite it.
@@ -248,7 +304,6 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
         return _hold("no signal snapshot", reasons)
 
     ch = signal.get("channels", {})
-    ripple, wave, tide = ch.get("ripple", {}), ch.get("wave", {}), ch.get("tide", {})
     available = _num(treasury.get("available"))
     if not available or available <= 0:
         return _hold("no spendable capital (available <= 0)", reasons)
@@ -292,30 +347,40 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
     entry_name, entry_ch = _entry_lane(ch, cfg, entry_iv)
     if not entry_ch:
         return _hold(f"no {entry_iv} lane for the entry interval in the snapshot "
-                     f"(listed intervals: {', '.join(chain['intervals'])})", reasons)
+                     f"(listed intervals: {', '.join(chain['intervals'])})", reasons,
+                     interval=entry_iv)
     s = _strength(entry_ch.get("strength"))
     direction = entry_ch.get("strengthDirection")
     gauge = s                                   # strength reported to the plan
-    chain_reads = []
+    # --- the entry lane's OWN band (dynamic by its interval label). The small TF
+    # must sit inside its buy range to trigger a BUY, its sell range to SELL.
+    eb = _bands(cfg, entry_iv, entry=True)
+    entry_buy = s is not None and _in(s, eb["buy"])
+    entry_sell = s is not None and _in(s, eb["sell"])
+    reasons.append(f"entry lane {entry_name}/{entry_iv} str {round(s, 3) if s is not None else s} · "
+                   f"BUY in [{eb['buy'][0]:g},{eb['buy'][1]:g}]: {'ALLOW' if entry_buy else 'BLOCK'} · "
+                   f"SELL in [{eb['sell'][0]:g},{eb['sell'][1]:g}]: {'ALLOW' if entry_sell else 'BLOCK'}")
+    # --- climb the rungs, smallest -> highest ACTIVE interval. Each rung's strength
+    # must sit inside ITS OWN selected range (buy range to buy, sell range to sell).
     if chain_used:
         for r in rungs:
             g, src = _rung_read(ch, cfg, pair or signal.get("pair"), r)
-            em, xm = _rung_bands(cfg, r)
+            rb = _bands(cfg, r)
             if g is None:
                 chain_reads.append({"interval": r, "strength": None, "source": src,
-                                    "entry_strength_max": em, "exit_strength_min": xm,
+                                    "buy_range": list(rb["buy"]), "sell_range": list(rb["sell"]),
                                     "buy_allowed": False, "sell_allowed": False,
                                     "note": f"{r} strength unavailable ({src})"})
                 reasons.append(f"strength chain: {r} unavailable ({src})")
                 continue
-            buy_ok = g <= em
-            sell_ok = g >= xm
-            note = (f"{r} str {round(g, 3)} ({src}) · BUY ≤ {em:g}: "
-                    f"{'ALLOW' if buy_ok else 'BLOCK'} · SELL ≥ {xm:g}: "
+            buy_ok = _in(g, rb["buy"])
+            sell_ok = _in(g, rb["sell"])
+            note = (f"{r} str {round(g, 3)} ({src}) · BUY in [{rb['buy'][0]:g},{rb['buy'][1]:g}]: "
+                    f"{'ALLOW' if buy_ok else 'BLOCK'} · SELL in [{rb['sell'][0]:g},{rb['sell'][1]:g}]: "
                     f"{'ALLOW' if sell_ok else 'BLOCK'}")
             reasons.append(f"strength chain: {note}")
             chain_reads.append({"interval": r, "strength": round(g, 4), "source": src,
-                                "entry_strength_max": em, "exit_strength_min": xm,
+                                "buy_range": list(rb["buy"]), "sell_range": list(rb["sell"]),
                                 "buy_allowed": buy_ok, "sell_allowed": sell_ok, "note": note})
         if chain_reads:
             gauge = chain_reads[-1]["strength"]     # the acting (highest) gauge
@@ -326,18 +391,31 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
         chain_sell = all(r.get("sell_allowed") for r in chain_reads)
     else:
         chain_buy = chain_sell = None
+    # --- STAR ALIGNMENT (optional extra gate, per agent, GUI toggle). When ON the
+    # ENTRY lane must actually be ELIGIBLE (its own signal says buy/sell), while the
+    # rungs/HTF only need their strength inside the selected zone (the climb above).
+    star = bool(cfg.get("star_alignment", False))
+    star_buy = star_sell = None
+    if star:
+        star_buy = bool(entry_ch.get("entryEligible"))
+        star_sell = bool(entry_ch.get("exitEligible"))
+        reasons.append(f"star alignment ON \u2014 entry {entry_iv} must be eligible: "
+                       f"BUY entryEligible={star_buy} \u00b7 SELL exitEligible={star_sell}")
     # SPREAD TRUTH (owner rule): trust ONLY the 15m spread read. Other timeframes
     # are noise or too slow. Find the 15m lane regardless of which channel we trade.
-    shared15 = _shared_15m(ch)
+    shared15 = _shared_15m(ch, cfg.get("spread_trusted_interval", "15m"))
     cfg_buy = dict(cfg, require_proven_edge=False) if buy_override else cfg
     adv = entry_ch.get("advisor") or {}
     buy, sell = _num(adv.get("buy")), _num(adv.get("sell"))
     plans = []
-    # BUY
+    # BUY — entry lane in its buy range, every active rung in its buy range, and
+    # (when star alignment is ON) the entry lane's own buy signal is eligible.
     if chain_used:
-        buy_ok_total = bool(chain_buy) and not _missing(buy)
+        buy_ok_total = entry_buy and bool(chain_buy) and not _missing(buy)
     else:
-        buy_ok_total = (s is not None and s <= cfg["entry_strength_max"] and not _missing(buy))
+        buy_ok_total = entry_buy and not _missing(buy)
+    if star:
+        buy_ok_total = buy_ok_total and bool(star_buy)
     if buy_ok_total:
         p = _build(entry_name, entry_ch, "BUY", buy, gauge, direction, available,
                    cfg_buy, reasons, _edge, pair, shared15)
@@ -346,12 +424,18 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
                 p["evidence"].append(f"strength chain {r['note']}")
                 p["explain"].append(f"strength chain {r['note']}")
         if p:
+            if star:
+                p["evidence"].append(f"star alignment: entry {entry_iv} entryEligible={star_buy}")
+                p["explain"].append(f"star alignment: entry {entry_iv} entryEligible={star_buy}")
+            p["star_aligned"] = bool(star)
             plans.append(p)
     # SELL (only if we can actually sell — advisor sell present)
     if chain_used:
-        sell_ok_total = bool(chain_sell) and not _missing(sell)
+        sell_ok_total = entry_sell and bool(chain_sell) and not _missing(sell)
     else:
-        sell_ok_total = (s is not None and s >= cfg["exit_strength_min"] and not _missing(sell))
+        sell_ok_total = entry_sell and not _missing(sell)
+    if star:
+        sell_ok_total = sell_ok_total and bool(star_sell)
     if sell_ok_total and (not spot_only or float(holding or 0) > 0):
         p = _build(entry_name, entry_ch, "SELL", sell, gauge, direction, available,
                    cfg, reasons, _edge, pair, shared15)
@@ -360,13 +444,17 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
                 p["evidence"].append(f"strength chain {r['note']}")
                 p["explain"].append(f"strength chain {r['note']}")
         if p:
+            if star:
+                p["evidence"].append(f"star alignment: entry {entry_iv} exitEligible={star_sell}")
+                p["explain"].append(f"star alignment: entry {entry_iv} exitEligible={star_sell}")
+            p["star_aligned"] = bool(star)
             plans.append(p)
     if not plans:
         if _edge:
             reasons.append("evidence gate: no channel+side has a PROVEN post-fee edge "
                            "(see logs/edge_report.json)")
         reasons.append("entry lane did not clear the strength chain bands")
-        return _hold("no strength-chain setup", reasons)
+        return _hold("no strength-chain setup", reasons, chain_reads, interval=entry_iv)
 
     # --- brain bias alignment + HTF context ---
     bias = (verdict or {}).get("bias")
@@ -376,20 +464,24 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
             p["aligned"] = aligned
             if not aligned:
                 p["score"] -= 0.1
-    if cfg.get("require_tide_context"):
-        tide_dir = tide.get("trendState")
+    # --- HTF context (the HIGHEST lane in the snapshot — no fixed 'tide' channel).
+    # Reads the lane's real trend: top-level trendState, else the marketResult read.
+    if cfg.get("require_htf_context", cfg.get("require_tide_context", True)):
+        htf_name, htf_ch = _htf_lane(ch)
+        htf_dir = (htf_ch or {}).get("trendState") or ((htf_ch or {}).get("marketResult") or {}).get("trendState")
+        htf_iv = (htf_ch or {}).get("interval")
         for p in plans:
-            p["tide_ctx"] = tide_dir
-            if p["side"] == "BUY" and tide_dir == "falling":
-                p["score"] -= 0.15; reasons.append(f"{p['channel']} buy but tide falling (context risk)")
-            if p["side"] == "SELL" and tide_dir == "rising":
-                p["score"] -= 0.15; reasons.append(f"{p['channel']} sell but tide rising (context risk)")
+            p["htf_ctx"] = htf_dir
+            if p["side"] == "BUY" and htf_dir == "falling":
+                p["score"] -= 0.15; reasons.append(f"{p['channel']} buy but {htf_name}/{htf_iv} falling (context risk)")
+            if p["side"] == "SELL" and htf_dir == "rising":
+                p["score"] -= 0.15; reasons.append(f"{p['channel']} sell but {htf_name}/{htf_iv} rising (context risk)")
 
     # --- R:R filter ---
     plans = [p for p in plans if p["rr"] >= cfg["min_reward_risk"]]
     if not plans:
         reasons.append(f"no plan cleared min R:R {cfg['min_reward_risk']}")
-        return _hold("R:R too low", reasons)
+        return _hold("R:R too low", reasons, chain_reads, interval=entry_iv)
 
     best = sorted(plans, key=lambda p: (-p["score"], -p["rr"]))[0]
     return {
@@ -402,26 +494,29 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
         "risk_quote": round(best["risk_quote"], 2), "rr": round(best["rr"], 2),
         "score": round(best["score"], 4),
         "edge": best.get("edge"),
-        "brain_stance": stance, "brain_bias": bias, "tide_ctx": best.get("tide_ctx"),
+        "interval": best.get("interval"),
+        "brain_stance": stance, "brain_bias": bias,
+        "htf_ctx": best.get("htf_ctx"), "tide_ctx": best.get("htf_ctx"),
+        "chain": chain_reads,
         "evidence": best.get("evidence", []),
         "explain": best["explain"] + [f"single entry lane {best['channel']} (no best-interval selection)"],
         "status": "UNVALIDATED",
     }
 
 
-def _shared_15m(channels: dict) -> dict:
-    """The 15m lane is the SOURCE OF TRUTH for the shared signals: the MA spread
-    AND the MA20/MA50 cross (owner rule). Other intervals keep their own
-    range/trend/structure, but spread + MA-cross are read from 15m only.
-    The lane may be labeled wave15 (dayTrade merge) or be any channel with
-    interval == 15m."""
+def _shared_15m(channels: dict, trusted: str = "15m") -> dict:
+    """The trusted interval is the SOURCE OF TRUTH for the shared signals: the MA
+    spread AND the MA20/MA50 cross (owner rule). Other intervals keep their own
+    range/trend/structure, but spread + MA-cross are read from the trusted interval
+    only (config spread_trusted_interval, default 15m). The lane may be labeled
+    wave15 (dayTrade merge) or be ANY channel carrying that interval."""
     if not channels:
         return {}
     for name, c in channels.items():
-        if str(c.get("interval")) == "15m":
+        if str(c.get("interval")) == str(trusted):
             mr = c.get("marketResult") or {}
             mx = c.get("maCross") or {}
-            return {"label": name, "interval": "15m",
+            return {"label": name, "interval": str(trusted),
                     # spread
                     "change": mr.get("spreadChange"),
                     "latest": mr.get("latestSpread"),
@@ -455,7 +550,8 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
     mr = c.get("marketResult") or {}
     trend = (mr.get("trendState") or c.get("trendState") or "").lower()
     if shared15 is None:
-        shared15 = _shared_15m({"15m": c})     # fall back if this channel IS 15m
+        shared15 = _shared_15m({c.get("interval") or "15m": c},
+                               cfg.get("spread_trusted_interval", "15m"))  # fall back to this lane
     change = (shared15 or {}).get("change")
     eps = float(cfg.get("spread_flat_epsilon", 0.02))   # "flat" band
     spread_gate = cfg.get("require_spread_agreement", True)
@@ -574,7 +670,7 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
          f"{ma_bias or '?'} cross={ma_cross}" if (shared15 or {}).get('ma20') else
          "15m MA cross: no read available"),
     ]
-    return {"channel": channel, "side": side, "entry": entry, "stop": stop, "target": target,
+    return {"channel": channel, "interval": interval, "side": side, "entry": entry, "stop": stop, "target": target,
             "size_quote": size_quote, "risk_quote": risk_quote,
             "order_type": _entry_type, "expiry_s": int(cfg.get("entry_expiry_seconds", 600)),
             "fee_reserve_pct": round(fee_reserve * 100, 3),
@@ -593,8 +689,9 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
                         f"{round(fee_frac*100,2)}%"]}
 
 
-def _hold(reason, reasons):
-    return {"action": "HOLD", "reason": reason, "explain": reasons, "status": "UNVALIDATED"}
+def _hold(reason, reasons, chain=None, interval=None, htf_ctx=None):
+    return {"action": "HOLD", "reason": reason, "explain": reasons, "chain": chain or [],
+            "interval": interval, "htf_ctx": htf_ctx, "status": "UNVALIDATED"}
 
 
 if __name__ == "__main__":

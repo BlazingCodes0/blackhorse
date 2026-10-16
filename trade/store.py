@@ -419,19 +419,33 @@ def backfill_from_kraken(since_ts: float = 1791072000) -> dict:
 
 def record_decision_changed(source, action, pair=None, agent=None, min_gap_s=3600, **kw):
     """Decision log WITHOUT the noise. BUY/SELL always recorded. HOLD/SKIP only when the
-    action or the reason (digits ignored) changed since this agent's last row for the pair,
-    or at most once per min_gap_s as a heartbeat. Keeps the table small."""
+    action, the reason (digits ignored), OR the strength-chain verdict changed since this
+    agent's last row for the pair, or at most once per min_gap_s as a heartbeat. Keeps the
+    table small — but always re-logs when a live-pulled rung flips, so the GUI can show it."""
     import re
     init()
     con = connect()
     reason = kw.get("reason")
+
+    def _chain_sig(detail):
+        c = (detail or {}).get("chain") if isinstance(detail, dict) else None
+        if not c:
+            return ()
+        return tuple((str(r.get("interval")), bool(r.get("buy_allowed")), bool(r.get("sell_allowed")))
+                     for r in c)
+
     if action not in ("BUY", "SELL"):
-        last = con.execute("SELECT ts, action, reason FROM decisions WHERE source=? AND agent IS ? AND pair IS ? "
+        last = con.execute("SELECT ts, action, reason, detail FROM decisions WHERE source=? AND agent IS ? AND pair IS ? "
                            "ORDER BY ts DESC LIMIT 1", (source, agent, pair)).fetchone()
         norm = lambda r: re.sub(r"[0-9.$%]+", "#", str(r or ""))
         if last and last["action"] == action and norm(last["reason"]) == norm(reason) \
                 and _now() - last["ts"] < min_gap_s:
-            return None
+            try:
+                last_chain = _chain_sig(json.loads(last["detail"] or "{}"))
+            except (json.JSONDecodeError, TypeError):
+                last_chain = ()
+            if _chain_sig(kw.get("detail")) == last_chain:
+                return None
     return record_decision(source, action, pair=pair, agent=agent, **kw)
 
 

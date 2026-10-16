@@ -10,11 +10,6 @@
         "entry_strength_max": 0.3,
         "exit_strength_min": 0.7,
         "require_tide_context": false,
-        "channels": [
-          "ripple",
-          "wave",
-          "tide"
-        ],
         "min_reward_risk": 1.2,
         "stop_max_pct": 3.0,
         "risk_per_trade_pct": 2.0,
@@ -25,10 +20,29 @@
           "240m"
         ],
         "strategy": "swing",
-        "entry_strength_max_60m": 0.0,
-        "exit_strength_min_60m": 1.0,
-        "entry_strength_max_240m": 0.2,
-        "exit_strength_min_240m": 0.8
+        "star_alignment": false,
+        "rung_bands": {
+          "60m": {
+            "buy": [
+              0.0,
+              0.3
+            ],
+            "sell": [
+              0.7,
+              1.0
+            ]
+          },
+          "240m": {
+            "buy": [
+              0.0,
+              0.3
+            ],
+            "sell": [
+              0.7,
+              1.0
+            ]
+          }
+        }
       },
       "created": "2026-10-04T15:53:25Z",
       "mode": "LIVE",
@@ -46,14 +60,27 @@
         "entry_strength_max": 0.3,
         "exit_strength_min": 0.7,
         "require_tide_context": false,
-        "channels": [
-          "ripple",
-          "wave"
-        ],
         "min_reward_risk": 1.2,
         "stop_max_pct": 1.5,
         "risk_per_trade_pct": 1.0,
-        "max_position_pct": 10.0
+        "max_position_pct": 10.0,
+        "strategy_intervals": [
+          "15m",
+          "60m"
+        ],
+        "strategy": "custom",
+        "rung_bands": {
+          "60m": {
+            "buy": [
+              0.0,
+              0.2
+            ],
+            "sell": [
+              0.85,
+              1.0
+            ]
+          }
+        }
       },
       "created": "2026-10-04T16:07:24Z",
       "mode": "LIVE"
@@ -65,16 +92,29 @@
       "enabled": false,
       "capital": 0.0,
       "policy_overrides": {
-        "channels": [
-          "ripple",
-          "wave"
-        ],
         "entry_strength_max": 0.2,
         "exit_strength_min": 0.6,
         "min_reward_risk": 1.2,
         "stop_max_pct": 1.5,
         "risk_per_trade_pct": 1.0,
-        "max_position_pct": 10.0
+        "max_position_pct": 10.0,
+        "strategy_intervals": [
+          "15m",
+          "60m"
+        ],
+        "strategy": "custom",
+        "rung_bands": {
+          "60m": {
+            "buy": [
+              0.0,
+              0.2
+            ],
+            "sell": [
+              0.85,
+              1.0
+            ]
+          }
+        }
       },
       "created": "2026-10-05T06:33:22Z",
       "mode": "LIVE",
@@ -90,7 +130,35 @@
       "capital": 0.0,
       "mode": "LIVE",
       "policy_overrides": {
-        "require_proven_edge": false
+        "require_proven_edge": false,
+        "strategy_intervals": [
+          "15m",
+          "60m",
+          "240m"
+        ],
+        "strategy": "custom",
+        "rung_bands": {
+          "60m": {
+            "buy": [
+              0.0,
+              0.2
+            ],
+            "sell": [
+              0.85,
+              1.0
+            ]
+          },
+          "240m": {
+            "buy": [
+              0.0,
+              0.15
+            ],
+            "sell": [
+              0.8,
+              1.0
+            ]
+          }
+        }
       },
       "created": "2026-10-05T19:18:50Z",
       "pairs": [
@@ -106,27 +174,93 @@
       "mode": "LIVE",
       "policy_overrides": {
         "min_reward_risk": 2.0,
-        "channels": [
-          "wave",
-          "tide"
-        ],
         "entry_order_type": "limit",
         "strategy": "custom",
         "strategy_intervals": [
           "60m",
-          "240m"
+          "240m",
+          "1440m"
         ],
         "entry_strength_max": 0.15,
         "exit_strength_min": 0.8,
         "max_position_pct": 50.0,
-        "entry_strength_max_240m": 0.2,
-        "exit_strength_min_240m": 1.0
+        "rung_bands": {
+          "240m": {
+            "buy": [
+              0.0,
+              0.15
+            ],
+            "sell": [
+              0.8,
+              1.0
+            ]
+          },
+          "1440m": {
+            "buy": [
+              0.0,
+              0.15
+            ],
+            "sell": [
+              0.8,
+              1.0
+            ]
+          }
+        }
       },
       "created": "2026-10-07T11:48:07Z",
       "pairs": [
         "DOT/USD"
       ]
+    },
+    "agent_7": {
+      "id": "agent_7",
+      "name": "15m 7",
+      "kind": "trading",
+      "enabled": true,
+      "capital": 10.0,
+      "mode": "LIVE",
+      "policy_overrides": {
+        "entry_strength_max": 0.25,
+        "exit_strength_min": 0.75,
+        "min_reward_risk": 1.2,
+        "stop_max_pct": 2.0,
+        "risk_per_trade_pct": 1.5,
+        "max_position_pct": 10.0,
+        "strategy_intervals": [
+          "15m",
+          "60m",
+          "240m"
+        ],
+        "strategy": "swing",
+        "stop_mode": "price_watch",
+        "rung_bands": {
+          "60m": {
+            "buy": [
+              0.0,
+              0.2
+            ],
+            "sell": [
+              0.85,
+              1.0
+            ]
+          },
+          "240m": {
+            "buy": [
+              0.0,
+              0.15
+            ],
+            "sell": [
+              0.8,
+              1.0
+            ]
+          }
+        }
+      },
+      "created": "2026-10-15T06:41:32Z",
+      "pairs": [
+        "DOT/USD"
+      ]
     }
   },
-  "next_id": 7
+  "next_id": 8
 }

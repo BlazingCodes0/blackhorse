@@ -80,8 +80,9 @@ INTERVAL_DEFAULTS = {
     },
 }
 
-_INTERVAL_SLOTS = {"5m": "ripple5", "15m": "wave15", "60m": "tide60",
-                   "240m": "tide", "1440m": "tide"}
+# Intervals are the profiles; snapshot channels are ANONYMOUS lanes. We never
+# assume ripple=15m / wave=60m / tide=240m — a lane is identified only by its own
+# 'interval' field, so the user can point any interval at any slot.
 _IV_ORDER = ["5m", "15m", "60m", "240m", "1440m"]
 
 
@@ -125,7 +126,7 @@ def list_agents(kind: str | None = None) -> list:
 
 def _summary(a: dict) -> dict:
     ov = a.get("policy_overrides") or {}
-    ivs = ov.get("strategy_intervals") or [x for x in _slots_to_intervals(ov.get("channels"))]
+    ivs = _as_intervals(ov.get("strategy_intervals")) or _as_intervals(ov.get("channels"))
     entry = ivs[0] if ivs else None
     return {"id": a["id"], "name": a.get("name"), "kind": a.get("kind"),
             "profile": a.get("profile"), "enabled": a.get("enabled", False),
@@ -135,16 +136,16 @@ def _summary(a: dict) -> dict:
             "strategy_intervals": ivs}
 
 
-def _slots_to_intervals(slots):
-    m = {"ripple": "15m", "wave": "60m", "tide": "240m", "ripple5": "5m",
-         "wave15": "15m", "tide60": "60m"}
-    iv = []
-    for s in (slots or []):
-        iv.append(m.get(s, s))
+def _as_intervals(seq):
+    """Keep only entries that are real interval labels ('5m','60m','1440m',...).
+    Legacy channel NAMES (ripple/wave/tide) cannot be mapped to an interval here
+    (that needs the live snapshot), so they are dropped — the config now stores
+    intervals directly."""
     seen, out = set(), []
-    for x in iv:
-        if x not in seen:
-            seen.add(x); out.append(x)
+    for x in (seq or []):
+        s = str(x or "").strip()
+        if len(s) > 1 and s.endswith("m") and s[:-1].isdigit() and s not in seen:
+            seen.add(s); out.append(s)
     return out
 
 
@@ -207,7 +208,6 @@ def create_agent(kind: str, profile: str = "15m", name: str = None, capital: flo
         ov = dict(seed["cfg"])
         ivs = [profile] + [x for x in _IV_ORDER if x in seed.get("climb", [])]
         ov["strategy_intervals"] = ivs
-        ov["channels"] = list(dict.fromkeys(_INTERVAL_SLOTS.get(x, x) for x in ivs))
     d["agents"][agent_id] = {
         "id": agent_id,
         "name": name,
@@ -334,6 +334,15 @@ def set_mode(agent_id: str, mode: str) -> dict:
 def set_override(agent_id: str, key: str, value) -> dict:
     d = _load(); a = get_agent(agent_id)
     a.setdefault("policy_overrides", {})[key] = value
+    d["agents"][agent_id] = a
+    _save(d)
+    return _summary(a)
+
+
+def clear_override(agent_id: str, key: str) -> dict:
+    """Remove one policy override (e.g. a legacy 'channels' name list)."""
+    d = _load(); a = get_agent(agent_id)
+    (a.get("policy_overrides") or {}).pop(key, None)
     d["agents"][agent_id] = a
     _save(d)
     return _summary(a)

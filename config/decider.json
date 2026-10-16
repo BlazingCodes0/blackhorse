@@ -8,7 +8,7 @@
   "stop_max_pct": 3.0,
   "stop_buffer_pct": 0.6,
   "fee_pct_per_side": 0.80,
-  "require_tide_context": true,
+  "require_htf_context": true,
   "require_proven_edge": false,
   "spread_flat_epsilon": 0.02,
   "spread_trusted_interval": "15m",
