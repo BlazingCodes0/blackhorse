@@ -527,6 +527,71 @@ def _live_order(plan: dict, pair: str) -> dict:
     return {"ok": True, "mode": "LIVE", "txid": txid, "volume": volume, "result": res.get("result")}
 
 
+def cancel_verified(txid: str, pair: str = None, tries: int = 3) -> bool:
+    """Cancel a resting order and CONFIRM it is gone on the venue before anyone rests a
+    replacement on the same pair. Exchange-as-truth: a cancel that didn't take (or that
+    we can't read back) returns False, so the caller must NOT place another sell. This
+    is the seam that let one position end up with two working sells when a cancel
+    silently failed or the process died between placing the sell and recording it."""
+    import time
+    if not txid:
+        return True
+    try:
+        venues.cancel(txid, pair)
+    except Exception:
+        pass
+    for _ in range(max(1, tries)):
+        try:
+            o = venues.orders([(txid, pair)]).get(txid)
+        except Exception:
+            o = None
+        if o and str(o.get("status")) in ("canceled", "closed", "expired"):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _exit_client_id(pos_id: str) -> str:
+    """Deterministic 32-hex id for a position's exit (Kraken short-UUID / Binance
+    newClientOrderId / Coinbase client_order_id alike). It makes the sell
+    self-identifying, so after a shutdown/restart we can see it was ALREADY SENT and
+    adopt it instead of sending a second one. The venues also reject a duplicate id
+    while one is open, so the id itself is the per-position idempotency key — no
+    per-pair blocking."""
+    import hashlib
+    return hashlib.sha256(f"bh-exit:{pos_id}".encode()).hexdigest()[:32]
+
+
+def _record_working_exit(pos: dict, pair: str, txid: str, price: float, volume: float,
+                         reason: str, kind: str, level) -> None:
+    """Mark a position as selling and track its resting exit — used both when we place
+    the sell and when we ADOPT one already working after a restart."""
+    import time, portfolio
+    try:
+        import store
+        store.live_order(txid, pos.get("agent"), pair, "sell", "limit", price,
+                         volume, plan={"reason": reason}, status="OPEN",
+                         time_in_force="GTC")
+    except Exception:
+        pass
+    d = portfolio._load()
+    for p in d["positions"]:
+        if p["id"] == pos["id"]:
+            p["exit_txid"] = txid
+            p["exit_price"] = price
+            p["exit_reason"] = reason
+            p["exit_kind"] = kind
+            if level is not None:
+                p["exit_level"] = level
+    portfolio._save(d)
+    ex = _exit_load()
+    ex = [x for x in ex if x.get("pos_id") != pos["id"]]
+    ex.append({"txid": txid, "pos_id": pos["id"], "agent": pos.get("agent"), "pair": pair,
+               "price": price, "qty": volume, "volume": volume,
+               "placed": time.time(), "reason": reason, "done": 0, "kind": kind, "level": level})
+    _exit_save(ex)
+
+
 def sell_position(pos_id: str, reason: str, price: float = None,
                   kind: str = "profit", level: float = None) -> dict:
     """LIMIT-ONLY exit: rest a maker sell at/above the best ask and earn the maker fee.
@@ -557,34 +622,42 @@ def sell_position(pos_id: str, reason: str, price: float = None,
     if os.environ.get("BH_VALIDATE_ONLY"):
         return {"ok": True, "validated": True,
                 "body": {"pair": pair, "type": "sell", "ordertype": "limit",
-                         "volume": str(volume), "price": str(price)}}
-    res = venues.place_order(pair, "sell", "limit", volume, price, None)
+                         "volume": str(volume), "price": str(price),
+                         "cl_ord_id": _exit_client_id(pos_id)}}
+    cid = _exit_client_id(pos_id)
+    # Robust send: this position's exit carries a deterministic client id. If that order
+    # is already working on the venue (we were shut down between sending it and recording
+    # it), ADOPT it rather than send a second sell. Scoped to THIS position, so another
+    # agent exiting on the same pair is never blocked. A failed read is not fatal: we
+    # still send with the id and the venue rejects a duplicate below.
+    def _adopt(entry):
+        ep = float(entry.get("price") or price)
+        _record_working_exit(pos, pair, entry["id"], ep, float(entry.get("vol") or volume),
+                             reason, kind, level)
+        return {"ok": True, "txid": entry["id"], "price": ep, "volume": volume, "pending": True,
+                "maker": True, "adopted": True, "bid": bid, "ask": ask, "kind": kind}
+    try:
+        working = venues.open_orders(pair)
+    except Exception:
+        working = None
+    existing = next((o for o in (working or []) if o.get("cid") == cid), None)
+    if existing:
+        return _adopt(existing)
+    res = venues.place_order(pair, "sell", "limit", volume, price, None, client_id=cid)
     invalidate_balance()
     if not res.get("ok"):
+        # A rejected duplicate means the exit is already working — adopt it (belt & braces
+        # for the race where open_orders hadn't caught up a moment earlier).
+        try:
+            listing = venues.open_orders(pair) or []
+        except Exception:
+            listing = []
+        existing = next((o for o in listing if o.get("cid") == cid), None)
+        if existing:
+            return _adopt(existing)
         return {"ok": False, "reason": f"order rejected: {res.get('error')}"}
     txid = res.get("order_id")
-    try:
-        import store
-        store.live_order(txid, pos.get("agent"), pair, "sell", "limit", price, volume,
-                         plan={"reason": reason}, status="OPEN", time_in_force="GTC")
-    except Exception:
-        pass
-    d = portfolio._load()                         # mark it selling so we never double-fire
-    for p in d["positions"]:
-        if p["id"] == pos_id:
-            p["exit_txid"] = txid
-            p["exit_price"] = price
-            p["exit_reason"] = reason
-            p["exit_kind"] = kind
-            if level is not None:
-                p["exit_level"] = level
-    portfolio._save(d)
-    ex = _exit_load()
-    ex = [x for x in ex if x.get("pos_id") != pos_id]
-    ex.append({"txid": txid, "pos_id": pos_id, "agent": pos.get("agent"), "pair": pair,
-               "price": price, "qty": volume, "volume": volume, "placed": time.time(),
-               "reason": reason, "done": 0, "kind": kind, "level": level})
-    _exit_save(ex)
+    _record_working_exit(pos, pair, txid, price, volume, reason, kind, level)
     return {"ok": True, "txid": txid, "price": price, "volume": volume, "pending": True,
             "maker": True, "bid": bid, "ask": ask, "kind": kind}
 
@@ -651,37 +724,40 @@ def sync_exits() -> list:
             events.append({"txid": e["txid"], "pos": e["pos_id"], "result": "partial",
                            "vol": vol, "price": px})
         if st in ("open", "pending"):                 # still working
-            if time.time() - float(e.get("placed", 0)) >= requote:
-                try:
-                    venues.cancel(e["txid"], e.get("pair"))
-                except Exception:
-                    pass
-                d = portfolio._load()
-                for p in d["positions"]:
-                    if p["id"] == e["pos_id"]:
-                        p.pop("exit_txid", None)
-                portfolio._save(d)
-                if e.get("kind") == "stop":
-                    # a protective-stop limit is not chased to the profit minimum;
-                    # release it so exits.manage() re-arms at the current level.
-                    events.append({"txid": e["txid"], "pos": e["pos_id"],
-                                   "result": "stop-requote-deferred"})
-                    drop.add(e["txid"]); continue
-                try:
-                    _, taker = fees.rates(e["pair"])
-                    qty = float(pos["qty"])
-                    cost = float(pos["entry"]) * qty + float(pos.get("fee_entry") or 0)
-                    need = cost * (1 + min_net / 100) / (qty * (1 - taker))
-                    _, ask = _ticker(e["pair"])
-                    res2 = sell_position(e["pos_id"], e.get("reason") or "exit chase",
-                                         price=max(need, ask))
-                    events.append({"txid": e["txid"], "pos": e["pos_id"], "result": "requoted",
-                                   "new_txid": res2.get("txid"), "price": res2.get("price")})
-                except Exception as exc:
-                    events.append({"txid": e["txid"], "pos": e["pos_id"],
-                                   "result": f"requote-failed: {exc}"})
+            if time.time() - float(e.get("placed", 0)) < requote:
+                continue
+            # Past requote: move the resting exit to the current best ask. Confirm the
+            # cancel actually took BEFORE releasing the marker or resting a replacement,
+            # so a failed cancel can never leave two sells working on the pair.
+            if not cancel_verified(e["txid"], e.get("pair")):
+                events.append({"txid": e["txid"], "pos": e["pos_id"],
+                               "result": "cancel-not-confirmed"})
+                continue                              # keep the resting exit; retry next pass
+            d = portfolio._load()
+            for p in d["positions"]:
+                if p["id"] == e["pos_id"]:
+                    p.pop("exit_txid", None)
+            portfolio._save(d)
+            if e.get("kind") == "stop":
+                # a protective-stop limit is not chased to the profit minimum;
+                # release it so exits.manage() re-arms at the current level.
+                events.append({"txid": e["txid"], "pos": e["pos_id"],
+                               "result": "stop-requote-deferred"})
                 drop.add(e["txid"]); continue
-            continue
+            try:
+                _, taker = fees.rates(e["pair"])
+                qty = float(pos["qty"])
+                cost = float(pos["entry"]) * qty + float(pos.get("fee_entry") or 0)
+                need = cost * (1 + min_net / 100) / (qty * (1 - taker))
+                _, ask = _ticker(e["pair"])
+                res2 = sell_position(e["pos_id"], e.get("reason") or "exit chase",
+                                     price=max(need, ask))
+                events.append({"txid": e["txid"], "pos": e["pos_id"], "result": "requoted",
+                               "new_txid": res2.get("txid"), "price": res2.get("price")})
+            except Exception as exc:
+                events.append({"txid": e["txid"], "pos": e["pos_id"],
+                               "result": f"requote-failed: {exc}"})
+            drop.add(e["txid"]); continue
         # canceled/expired with nothing (left) to fill -> release so exits.py retries
         d = portfolio._load()
         for p in d["positions"]:

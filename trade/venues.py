@@ -16,6 +16,8 @@ adapter exposes the same methods, so the engine above never branches on venue:
     cancel(order_id[, pair])           -> {ok, ...}
     orders([(id, pair), ...])          -> {id: {status, vol_exec, price, cost, fee}}
     order_status(order_id[, pair])     -> single status-dict | None
+    open_orders([pair])                -> [{id, pair, side, type, price, vol, vol_exec}] | None
+                                          (None == could not read; never read as "none")
 
 Status is normalised to the tokens the rest of the code already speaks:
 open / partial / closed (=fully filled) / canceled / expired.
@@ -161,7 +163,8 @@ class Exchange:
     def balance(self):
         raise NotImplementedError
 
-    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None, time_in_force="GTC"):
+    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None,
+                    time_in_force="GTC", client_id=None):
         raise NotImplementedError
 
     def cancel(self, order_id, pair=None):
@@ -172,6 +175,20 @@ class Exchange:
 
     def orders(self, refs):
         return {}
+
+    def open_orders(self, pair=None):
+        """Working orders on the venue, canonicalised to {id, pair, side, type, price,
+        vol, vol_exec, cid} — `cid` is the client order id we sent (Kraken cl_ord_id /
+        Binance clientOrderId / Coinbase client_order_id), used to recognise our OWN
+        exit and adopt it after a restart. Filtered to one pair if given. Returns None
+        when it cannot read (UNKNOWN) — callers must treat that as "cannot verify",
+        never as "none".
+
+        Every adapter MUST override this. The exit path uses the deterministic client
+        id to detect a sell it already sent, so a venue that doesn't implement this
+        cannot adopt — a caller should fall back to sending with its id (the venue
+        rejects the duplicate) rather than assume no order is working."""
+        return None
 
 
 # --- Kraken ------------------------------------------------------------------
@@ -197,6 +214,15 @@ class Kraken(Exchange):
         if a in ("XXBT", "XBT"):
             return "BTC"
         return a.lstrip("XZ") if a.startswith(("X", "Z")) and len(a) > 3 else a
+
+    def _canon_pair(self, native):
+        """Kraken native symbol ('DOTUSD', 'XXBTZUSD') -> canonical 'DOT/USD'."""
+        s = str(native or "").upper().replace("/", "")
+        for q in ("ZUSD", "ZCAD", "ZEUR", "ZGBP", "ZJPY", "USDT", "USDC",
+                  "USD", "EUR", "GBP", "CAD"):
+            if s.endswith(q) and len(s) > len(q):
+                return f"{self._asset(s[:-len(q)])}/{self._asset(q)}"
+        return norm_pair(native)
 
     _last_nonce = 0
 
@@ -310,9 +336,12 @@ class Kraken(Exchange):
         self._bal["v"], self._bal["ts"] = dict(out), time.time()
         return out
 
-    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None, time_in_force="GTC"):
+    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None,
+                    time_in_force="GTC", client_id=None):
         body = {"nonce": str(int(time.time() * 1000)), "pair": self._native(pair),
                 "type": side.lower(), "ordertype": order_type.lower(), "volume": str(volume)}
+        if client_id:
+            body["cl_ord_id"] = str(client_id)
         tif = str(time_in_force or "GTC").upper()
         if tif == "IOC":
             body["timeinforce"] = "ioc"
@@ -352,6 +381,24 @@ class Kraken(Exchange):
             out[oid] = {"status": o.get("status"), "vol_exec": float(o.get("vol_exec") or 0),
                         "price": float(o.get("price") or 0), "cost": float(o.get("cost") or 0),
                         "fee": float(o.get("fee") or 0)}
+        return out
+
+    def open_orders(self, pair=None):
+        r = self._private("/0/private/OpenOrders", {"nonce": str(int(time.time() * 1000))})
+        if r.get("error"):
+            return None
+        want = norm_pair(pair) if pair else None
+        out = []
+        for txid, o in ((r.get("result") or {}).get("open") or {}).items():
+            d = o.get("descr") or {}
+            cp = self._canon_pair(d.get("pair"))
+            if want and cp != want:
+                continue
+            out.append({"id": txid, "pair": cp, "side": str(d.get("type") or "").lower(),
+                        "type": str(d.get("ordertype") or "").lower(),
+                        "price": float(d["price"]) if d.get("price") else None,
+                        "vol": float(o.get("vol") or 0), "vol_exec": float(o.get("vol_exec") or 0),
+                        "cid": o.get("cl_ord_id")})
         return out
 
 
@@ -438,8 +485,11 @@ class Binance(Exchange):
                 out[b["asset"].upper()] = out.get(b["asset"].upper(), 0) + amt
         return out
 
-    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None, time_in_force="GTC"):
+    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None,
+                    time_in_force="GTC", client_id=None):
         p = {"symbol": self._native(pair), "side": side.upper(), "type": order_type.upper(), "quantity": volume}
+        if client_id:
+            p["newClientOrderId"] = str(client_id)
         tif = str(time_in_force or "GTC").upper()
         if order_type.lower() == "limit":
             p["price"] = price
@@ -478,6 +528,22 @@ class Binance(Exchange):
                     out[oid] = s
             except Exception:
                 continue
+        return out
+
+    def open_orders(self, pair=None):
+        try:
+            params = {"symbol": self._native(pair)} if pair else {}
+            d = self._signed("GET", "/api/v3/openOrders", params)
+        except Exception:
+            return None
+        out = []
+        for o in (d or []):
+            out.append({"id": str(o.get("orderId")), "pair": norm_pair(o.get("symbol")),
+                        "side": str(o.get("side") or "").lower(),
+                        "type": str(o.get("type") or "").lower(),
+                        "price": float(o.get("price") or 0),
+                        "vol": float(o.get("origQty") or 0), "vol_exec": float(o.get("executedQty") or 0),
+                        "cid": o.get("clientOrderId")})
         return out
 
 
@@ -563,8 +629,8 @@ class Coinbase(Exchange):
         raw = r.to_bytes(32, "big") + s.to_bytes(32, "big")
         return (signing + b"." + b64url(raw)).decode()
 
-    def _cdp(self, method, path, body=None):
-        token = self._jwt(method, path)
+    def _cdp(self, method, path, body=None, sign_path=None):
+        token = self._jwt(method, sign_path or path)
         return _http(f"{self.CDP}{path}", method=method,
                      headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                      body=json.dumps(body) if body is not None else None)
@@ -578,7 +644,8 @@ class Coinbase(Exchange):
                 out[a["currency"].upper()] = out.get(a["currency"].upper(), 0) + amt
         return out
 
-    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None, time_in_force="GTC"):
+    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None,
+                    time_in_force="GTC", client_id=None):
         tif = str(time_in_force or "GTC").upper()
         if order_type.lower() == "limit":
             key = {"GTC": "limit_limit_gtc", "GTD": "limit_limit_gtd",
@@ -589,8 +656,8 @@ class Coinbase(Exchange):
                                                      time.gmtime(time.time() + int(expire_s)))
         else:
             cfg = {"market_market_ioc": {"base_size": str(volume)}}
-        body = {"client_order_id": __import__("uuid").uuid4().hex, "product_id": self._native(pair),
-                "side": side.upper(), "order_configuration": cfg}
+        body = {"client_order_id": str(client_id) if client_id else __import__("uuid").uuid4().hex,
+                "product_id": self._native(pair), "side": side.upper(), "order_configuration": cfg}
         try:
             r = self._cdp("POST", "/api/v3/brokerage/orders", body)
         except urllib.error.HTTPError as e:
@@ -630,6 +697,29 @@ class Coinbase(Exchange):
                   "CANCELLED": "canceled", "EXPIRED": "expired", "FAILED": "expired"}.get(
                       (o.get("status") or "").upper(), "open")
         return {"status": status, "vol_exec": vol, "price": px, "cost": vol * px, "fee": fee}
+
+    def open_orders(self, pair=None):
+        path = "/api/v3/brokerage/orders/historical/batch"
+        q = "order_status=OPEN"
+        if pair:
+            q += f"&product_id={self._native(pair)}"
+        try:
+            d = self._cdp("GET", f"{path}?{q}", sign_path=path)
+        except Exception:
+            return None
+        out = []
+        for o in (d.get("orders") or []):
+            cfg = o.get("order_configuration") or {}
+            lim = (cfg.get("limit_limit_gtc") or cfg.get("limit_limit_gtd")
+                   or cfg.get("limit_limit_ioc") or cfg.get("limit_limit_fok") or {})
+            out.append({"id": o.get("order_id"), "pair": norm_pair(o.get("product_id")),
+                        "side": str(o.get("side") or "").lower(),
+                        "type": str(o.get("order_type") or "").lower(),
+                        "price": float(lim["limit_price"]) if lim.get("limit_price") else None,
+                        "vol": float(lim["base_size"]) if lim.get("base_size") else None,
+                        "vol_exec": float(o.get("filled_size") or 0),
+                        "cid": o.get("client_order_id")})
+        return out
 
 
 # --- factory + facade --------------------------------------------------------
@@ -692,8 +782,10 @@ def invalidate_balance():
     Kraken._bal["ts"] = 0.0
 
 
-def place_order(pair, side, order_type, volume, price=None, expire_s=None, time_in_force="GTC"):
-    return active().place_order(pair, side, order_type, volume, price, expire_s, time_in_force)
+def place_order(pair, side, order_type, volume, price=None, expire_s=None,
+                time_in_force="GTC", client_id=None):
+    return active().place_order(pair, side, order_type, volume, price, expire_s,
+                                time_in_force, client_id)
 
 
 def cancel(order_id, pair=None):
@@ -706,6 +798,11 @@ def orders(refs):
 
 def order_status(order_id, pair=None):
     return active().order_status(order_id, pair)
+
+
+def open_orders(pair=None):
+    """Working orders on the active venue (optionally one pair). None == could not read."""
+    return active().open_orders(pair)
 
 
 if __name__ == "__main__":
