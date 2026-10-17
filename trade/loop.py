@@ -31,6 +31,7 @@ sys.path.insert(0, str(BH / "memory"))
 STATE = BH / "logs" / "loop_state.json"
 SIGNAL = BH / "logs" / "signal_latest.json"
 SETUP = BH / "config" / "signal_setup.json"
+TRADING = BH / "config" / "trading.json"
 SHUTDOWN = BH / "logs" / "shutdown.json"
 
 _STOP = False
@@ -122,6 +123,10 @@ def _journal_shutdown(reason: str) -> dict:
 
 def _setup() -> dict:
     return _load(SETUP, {})
+
+
+def _trading() -> dict:
+    return _load(TRADING, {})
 
 
 def _load(path, default):
@@ -222,6 +227,7 @@ def _pair_step(pair, primary, refresh_signal, ask_brain, cfg, setup) -> dict:
             for r in plan.get("agents") or []:
                 d = r.get("decision") or {}
                 store.record_decision_changed("loop", d.get("action", "HOLD"), pair=pair, agent=r.get("agent"),
+                                      min_gap_s=cfg.get("hold_log_gap_s", 0),
                                       channel=d.get("channel"), entry=d.get("entry"), stop=d.get("stop"),
                                       target=d.get("target"), size_quote=d.get("size_quote"), rr=d.get("rr"),
                                       edge=d.get("edge"), reason=d.get("reason") or r.get("reason"),
@@ -398,6 +404,7 @@ def daemon(interval=300, **kw):
     reason = "clean exit"
     try:
         while not _STOP:
+            cycle_start = time.time()
             try:
                 rec = sweep(**kw)
                 print(json.dumps(rec))
@@ -405,8 +412,10 @@ def daemon(interval=300, **kw):
                 raise
             except Exception as e:
                 print("loop error:", e)
-            # sleep in short steps: while any LONG is open, watch bid/ask for the exit
-            end = time.time() + max(30, interval)
+            # sleep in short steps: while any LONG is open, watch bid/ask for the exit.
+            # interval is measured from cycle START, so a slow sweep eats into the
+            # sleep instead of pushing the cadence out (--interval 300 really is 300s).
+            end = cycle_start + max(30, interval)
             while time.time() < end and not _STOP:
                 try:
                     import portfolio, exits
@@ -520,7 +529,8 @@ if __name__ == "__main__":
     if not _acquire_singleton("loop"):
         print("blackhorse loop already running (logs/loop.lock is held) — exiting", file=sys.stderr)
         raise SystemExit(0)
-    kw = dict(refresh_signal=not args.no_signal, ask_brain=not args.no_brain, pair=args.pair)
+    kw = dict(refresh_signal=not args.no_signal, ask_brain=not args.no_brain,
+              pair=args.pair, cfg=_trading())
     if args.night:
         print(json.dumps(night_shift(pairs=[p.strip() for p in args.pairs.split(",")],
                                      interval=args.interval, hours=args.hours,

@@ -1,5 +1,5 @@
 """BlackHorse desktop app — PyQt6. One window over the trading loop and host defense."""
-import sys, os, subprocess, threading, time, json
+import sys, os, subprocess, threading, time, json, html as _html
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
@@ -17,9 +17,10 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                                QPushButton, QLabel, QTextEdit, QListWidget, QListWidgetItem, QFrame,
                                QSystemTrayIcon, QMenu, QDialog, QFormLayout, QComboBox, QDialogButtonBox,
                                QSplitter, QMessageBox)
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QAction, QIcon
+from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtGui import QFont, QAction, QIcon, QDesktopServices
 from agents_ui import AgentsMixin
+from ui_util import keep_scroll, set_text_keep_scroll, set_html_keep_scroll
 import settings as _settings_mod
 try:
     import psutil              # optional — used only by the OFF verification
@@ -28,6 +29,10 @@ except Exception:
 settings = _settings_mod
 
 LOG = BH / "logs" / "threats.jsonl"
+
+# CryptoBoqor site (the trading platform) — local dev launcher.
+CRYPTOBOQOR_DIR = Path.home() / "cryptoboqor"
+CRYPTOBOQOR_PORT = 3000
 
 _APP_LOCK_FD = None
 
@@ -110,6 +115,180 @@ def _ago(ts):
         return f"{d//86400}d ago"
     except Exception:
         return "?"
+
+_ACT_COL = {"BUY": "#22c55e", "SELL": "#ef4444", "HOLD": "#f59e0b"}
+
+
+def _signal_preview_html(sig, src):
+    """SignalBot preview -> an HTML comparison table, one column per interval.
+
+    The old readout was a monospace wall (a dozen lines per lane); this lays
+    the configured lanes out side by side so strength / RSI / eligibility can
+    be read across timeframes instead of decoded line by line.
+    """
+    MUTED, VAL, HEAD, BORDER, HEAD_BG = "#94a3b8", "#e5e7eb", "#a5b4fc", "#1e293b", "#0d1526"
+
+    def esc(v):
+        return _html.escape(str(v)) if v not in (None, "") else "—"
+
+    def td(inner, color=None, align="left", bold=False, bg=None, top=True):
+        style = "padding:4px 10px;"
+        if top:
+            style += "border-top:1px solid %s;" % BORDER
+        if bg:
+            style += "background-color:%s;" % bg
+        if color:
+            style += "color:%s;" % color
+        if bold:
+            style += "font-weight:bold;"
+        return '<td style="%s" align="%s">%s</td>' % (style, align, inner)
+
+    def mark(ok):
+        return '<span style="color:%s">%s</span>' % ("#22c55e" if ok else "#ef4444", "✓" if ok else "✗")
+
+    chans = sig.get("channels", {})
+
+    def _iv_min(item):
+        try:
+            s = str((item[1] or {}).get("interval") or "")
+            return int(s[:-1]) if s.endswith("m") and s[:-1].isdigit() else 10 ** 9
+        except Exception:
+            return 10 ** 9
+
+    lanes = sorted(chans.items(), key=_iv_min)
+
+    def dir_cell(c):
+        s = c.get("strength") or 0
+        d = c.get("strengthDirection")
+        arrow, col = {"rising": ("▲", "#22c55e"), "falling": ("▼", "#f59e0b")}.get(d, ("→", MUTED))
+        return "<b>%s</b> <span style='color:%s'>%s %s</span>" % (f"{s:.3f}", col, arrow, esc(d))
+
+    def elig_cell(c, kind):
+        own = bool(c.get("entryEligible" if kind == "entry" else "exitEligible"))
+        if not c.get("strengthGate60"):
+            return "%s own <span style='color:%s'>(no gate)</span>" % (mark(own), MUTED)
+        g = bool(c.get("entryEligible60" if kind == "entry" else "exitEligible60"))
+        return "%s own · %s gate" % (mark(own), mark(g))
+
+    def spread_cell(c):
+        rr = c.get("marketResult") or {}
+        out = "%s <span style='color:%s'>← %s</span>" % (_n(rr.get("latestSpread")), MUTED, _n(rr.get("intialSpread")))
+        chg, cnt = rr.get("spreadChange"), rr.get("spreadCount")
+        if chg is not None:
+            out += " <span style='color:%s'>· %+.3f/%s</span>" % (MUTED, chg, cnt)
+        sv = rr.get("spreadVerdict")
+        if sv:
+            out += ("<br><span style='color:%s'>bias %s · chop %s · str %s (%s bars)</span>"
+                    % (MUTED, sv.get("directionBias"), sv.get("chopLevel"), sv.get("strength"), sv.get("bars")))
+        return out
+
+    def ma_cell(c):
+        sm = c.get("spreadMA") or {}
+        if not sm.get("available"):
+            return "<span style='color:%s'>—</span>" % MUTED
+        sig60 = str(sm.get("signal") or "")
+        col = "#22c55e" if sig60.startswith("bull") else ("#ef4444" if sig60.startswith("bear") else MUTED)
+        return "%s <span style='color:%s'>(%+.3f%%)</span> <span style='color:%s'>%s</span>" % (
+            _n(sm.get("diff")), MUTED, float(sm.get("diffPct") or 0), col, esc(sm.get("signal")))
+
+    def macross_cell(c):
+        mx = c.get("maCross") or {}
+        if not mx.get("available"):
+            return "<span style='color:%s'>—</span>" % MUTED
+        bias = str(mx.get("verdict") or mx.get("bias") or "")
+        col = "#22c55e" if "bull" in bias else ("#ef4444" if "bear" in bias else MUTED)
+        return "20 %s / 50 %s <span style='color:%s'>%s</span> <span style='color:%s'>· cross %s</span>" % (
+            _n(mx.get("ma20")), _n(mx.get("ma50")), col, esc(bias), MUTED, esc(mx.get("cross")))
+
+    def range_cell(c):
+        rs, rb = c.get("rangeSignal"), c.get("rangeBias")
+        return "<span style='color:%s'>%s</span> <span style='color:%s'>· %s</span>" % (
+            _ACT_COL.get(str(rs), MUTED), esc(rs), MUTED, esc(rb))
+
+    def stop_cell(c):
+        rr = c.get("marketResult") or {}
+        return "%s / %s" % (_n(rr.get("stopLoss")), _n(rr.get("takeProfit")))
+
+    def adv_cell(c):
+        a = c.get("advisor") or {}
+        def _or_dash(v):
+            return _n(v) if v else "—"
+        return "b %s · s %s" % (_or_dash(a.get("buy")), _or_dash(a.get("sell")))
+
+    def scen_cell(c):
+        s = c.get("setupScenario")
+        return esc(s) if s else "<span style='color:%s'>—</span>" % MUTED
+
+    def bw_cell(c):
+        bw = c.get("bottomWatch") or {}
+        if not bw:
+            return "<span style='color:%s'>—</span>" % MUTED
+        if bw.get("armed"):
+            return "<span style='color:#f59e0b'>ARMED</span> @ %s (str %s)" % (
+                _n(bw.get("price")), _n(bw.get("strength"), 2))
+        return "<span style='color:%s'>off</span> (str %s)" % (MUTED, _n(bw.get("strength"), 2))
+
+    head = "<tr>" + td("<b>%s</b><br><span style='color:%s'>%s · %s</span>" % (
+        esc(sig.get("pair")), MUTED, esc(sig.get("strategy")), esc(sig.get("exchange"))),
+        color=HEAD, bg=HEAD_BG, top=False)
+    for name, c in lanes:
+        act = str(c.get("action") or "?")
+        head += td("<b>%s</b><br><span style='color:%s'>%s</span> <span style='color:%s'>%s</span>" % (
+            esc(name), MUTED, esc(c.get("interval")), _ACT_COL.get(act, MUTED), act),
+            bg=HEAD_BG, top=False, align="center")
+    head += "</tr>"
+
+    def row(label, fn):
+        cells = td(label, color=MUTED)
+        for _name, c in lanes:
+            cells += fn(c)
+        return "<tr>" + cells + "</tr>"
+
+    body = "".join([
+        row("action", lambda c: td("<b>%s</b>" % esc(c.get("action")),
+                                   color=_ACT_COL.get(str(c.get("action")), VAL), align="center")),
+        row("confidence", lambda c: td(esc(c.get("confidence")), color=VAL, align="center")),
+        row("strength", lambda c: td(dir_cell(c), align="center")),
+        row("trend · RSI", lambda c: td("%s · <b>%s</b>" % (
+            esc((c.get("marketResult") or {}).get("trendState")),
+            esc((c.get("RSI") or {}).get("currentRSI"))), color=VAL)),
+        row("entry", lambda c: td(elig_cell(c, "entry"), align="center")),
+        row("exit", lambda c: td(elig_cell(c, "exit"), align="center")),
+        row("spread", lambda c: td(spread_cell(c), color=VAL)),
+        row("MA10−MA30", lambda c: td(ma_cell(c), color=VAL)),
+        row("macross", lambda c: td(macross_cell(c), color=VAL)),
+        row("range · bias", lambda c: td(range_cell(c))),
+        row("stop / target", lambda c: td(stop_cell(c), color=VAL, align="center")),
+        row("advisor", lambda c: td(adv_cell(c), color=VAL, align="center")),
+        row("scenario", lambda c: td(scen_cell(c), color=VAL)),
+        row("bottom-watch", lambda c: td(bw_cell(c), color=VAL)),
+    ])
+
+    tbl = ('<table width="100%" cellspacing="0" cellpadding="0" border="0" style="border:1px solid '
+           + BORDER + ';">' + head + body + '</table>')
+
+    title = ("<div style='color:%s'>[<span style='color:#22c55e'>%s</span>] "
+             "<b style='color:%s'>%s</b> @ %s · strategy %s · price <b>%s</b> · %s · %s · %s</div>") % (
+        MUTED, esc(src), VAL, esc(sig.get("pair")), esc(sig.get("exchange")), esc(sig.get("strategy")),
+        esc(_curr_price(chans)), esc(_ago(sig.get("ts"))), esc(_fmt_ts(sig.get("ts"))),
+        "%.1fs" % ((sig.get("run_ms") or 0) / 1000))
+
+    foot = ""
+    gate_lanes = [(n, c) for n, c in lanes if c.get("strengthGate60")]
+    if gate_lanes:
+        parts = []
+        for name, c in gate_lanes:
+            bits = ["%s %sbuy %ssell" % (esc(x.get("interval")), mark(x.get("buy_allowed")),
+                                         mark(x.get("sell_allowed")))
+                    for x in (c.get("strengthGateChain") or [])]
+            parts.append("<b>%s %s</b> · %s" % (esc(name), esc(c.get("interval")), " · ".join(bits)))
+        foot = ("<div style='color:%s;margin-top:6px'>strength-chain gate — %s "
+                "<span style='color:%s'>(absent rungs, e.g. 1440m, are pulled live by the decider)</span></div>") % (
+            MUTED, " &nbsp;|&nbsp; ".join(parts), MUTED)
+
+    return ('<div style="color:%s">%s</div><div style="height:6px"></div>%s%s'
+            % (VAL, title, tbl, foot))
+
 
 class BlackHorse(AgentsMixin, QMainWindow):
     def __init__(self):
@@ -360,6 +539,27 @@ class BlackHorse(AgentsMixin, QMainWindow):
         sc.addWidget(self.dash_status)
         v.addWidget(status_card)
 
+        cb_card, cb = card("CRYPTOBOQOR SITE")
+        self.cb_status = QLabel("not running")
+        self.cb_status.setFont(QFont("Monospace", 9))
+        self.cb_status.setWordWrap(True)
+        cb.addWidget(self.cb_status)
+        self.cb_launch_btn = QPushButton("Launch CryptoBoqor")
+        self.cb_launch_btn.setMinimumHeight(30)
+        self.cb_launch_btn.clicked.connect(self.cb_launch)
+        btn_cb_open = QPushButton("Open")
+        btn_cb_open.setMinimumHeight(30)
+        btn_cb_open.clicked.connect(self.cb_open)
+        btn_cb_stop = QPushButton("Stop")
+        btn_cb_stop.setMinimumHeight(30)
+        btn_cb_stop.setStyleSheet("background:#7f1d1d;color:white;")
+        btn_cb_stop.clicked.connect(self.cb_stop)
+        cb_row = QHBoxLayout()
+        cb_row.addWidget(self.cb_launch_btn); cb_row.addWidget(btn_cb_open)
+        cb_row.addWidget(btn_cb_stop); cb_row.addStretch(1)
+        cb.addLayout(cb_row)
+        v.addWidget(cb_card)
+
         v.addStretch(1)
         self.pages[0] = w; w.hide(); return w
 
@@ -445,6 +645,10 @@ class BlackHorse(AgentsMixin, QMainWindow):
             self.dash_trade.setText("\n".join(lines))
         except Exception as e:
             self.dash_trade.setText(f"unavailable: {e}")
+        try:
+            self.refresh_cb_status()
+        except Exception:
+            pass
 
     def restart_app(self):
         """Re-exec the dashboard in place, keeping the same process/args."""
@@ -660,7 +864,9 @@ class BlackHorse(AgentsMixin, QMainWindow):
         b_save_sig.clicked.connect(self._save_signal_setup)
         row_int.addWidget(b_save_sig)
         row_int.addStretch(1); v.addLayout(row_int)
-        self.signal_view = QTextEdit(); self.signal_view.setReadOnly(True); self.signal_view.setMaximumHeight(150)
+        # the preview is a table now (one column per interval) — give it room to
+        # be read whole instead of making the reader scroll a 150px letterbox
+        self.signal_view = QTextEdit(); self.signal_view.setReadOnly(True); self.signal_view.setMaximumHeight(480)
         self.signal_view.setFont(QFont("Monospace", 9))
         v.addWidget(self.signal_view)
 
@@ -719,7 +925,8 @@ class BlackHorse(AgentsMixin, QMainWindow):
         self.exc_status.setText(("✅ credentials ready" if creds["ready"] else
                                  "⚠️ missing: " + ", ".join(creds["missing_required"])))
         self.exc_status.setStyleSheet("color:green" if creds["ready"] else "color:orange")
-        self.exc_detail.setPlainText(
+        set_text_keep_scroll(
+            self.exc_detail,
             f"label: {d['label']}\nccxt: {d['ccxt_id']}\n"
             f"quotes: {', '.join(d['quote_assets'])}\n"
             f"needed perms: {', '.join(d['permissions_needed']) or '-'}\n"
@@ -837,7 +1044,7 @@ class BlackHorse(AgentsMixin, QMainWindow):
         n = snap.get("news", {})
         self.news_label.setText(n.get("summary", "—"))
         hl = n.get("headlines", [])
-        self.news_view.setPlainText("\n".join(f"• {h}" for h in hl) or "(no headlines)")
+        set_text_keep_scroll(self.news_view, "\n".join(f"• {h}" for h in hl) or "(no headlines)")
         sig = snap.get("signal", {})
         _sig_src = "bot live"
         # the signal block shows the user's manual preview run when one exists —
@@ -852,55 +1059,11 @@ class BlackHorse(AgentsMixin, QMainWindow):
         except Exception:
             pass
         if sig.get("available"):
-            chans = sig.get("channels", {})
-            lines = [f"[{_sig_src}] {sig.get('pair')} @ {sig.get('exchange')} · strategy {sig.get('strategy')} · price {_curr_price(chans)} · ran {_ago(sig.get('ts'))} · {_fmt_ts(sig.get('ts'))} · took {(sig.get('run_ms') or 0)/1000:.1f}s"]
-            for name, c in chans.items():
-                rr = c.get("marketResult") or {}
-                r = c.get("RSI") or {}
-                adv = c.get("advisor") or {}
-                lines.append(
-                    f"\n{name:8s} {c.get('interval','?'):>5}  {c.get('action','?'):5s} conf={c.get('confidence')}  strength={round(c.get('strength') or 0,3)} ({c.get('strengthDirection')})")
-                chg = rr.get('spreadChange')
-                cnt = rr.get('spreadCount')
-                is15m = str(c.get('interval')) == "15m"
-                sv = rr.get('spreadVerdict')
-                # compact spread numbers; drop the raw "spread=weakening" word (line below carries it)
-                gate = c.get("strengthGate60")
-                if gate:
-                    # small lanes: entry/exit eligibility forced through the 60m
-                    # strength gate — say WHY, so 'all green but False' is never a mystery.
-                    lines.append(f"    trend={rr.get('trendState')} RSI={r.get('currentRSI')} · entry eligible={c.get('entryEligible')}→60m:{c.get('entryEligible60')} · exit eligible={c.get('exitEligible')}→60m:{c.get('exitEligible60')}")
-                    lines.append(f"    60m strength gate (small-tf rule): {gate.get('note')}")
-                else:
-                    lines.append(f"    trend={rr.get('trendState')} RSI={r.get('currentRSI')} · entry eligible={c.get('entryEligible')} · exit eligible={c.get('exitEligible')}")
-                if is15m and sv:
-                    lines.append(f"    SPREAD latest={_n(rr.get('latestSpread'))} (was {_n(rr.get('intialSpread'))}) · verdict {sv.get('verdict')} · bias {sv.get('directionBias')} chop {sv.get('chopLevel')} str {sv.get('strength')} ({sv.get('bars')} bars) ⭐")
-                elif chg is not None:
-                    lines.append(f"    SPREAD latest={_n(rr.get('latestSpread'))} (was {_n(rr.get('intialSpread'))}) · change {chg:+.4f} / {cnt} bars (read 15m for truth)")
-                sm = c.get('spreadMA') or {}
-                if sm.get('available'):
-                    tag = " ⭐" if is15m else " (read 15m for truth)"
-                    lines.append(f"    MA10−MA30 diff={sm.get('diff'):+.4f} ({sm.get('diffPct'):+.3f}%) · {sm.get('signal')}{tag}")
-                if is15m:
-                    sc = c.get('setupScenario')
-                    bw = c.get('bottomWatch') or {}
-                    lines.append(f"    scenario: {sc}")
-                    if bw.get('armed'):
-                        lines.append(f"    bottom-watch: ARMED · price {_n(bw.get('price'))} vs low {_n(bw.get('low'))} · strength {_n(bw.get('strength'),2)} · waiting on RSI≤35 / spread improving / buyScore≥0.60 ⭐")
-                    else:
-                        lines.append(f"    bottom-watch: off (strength {_n(bw.get('strength'),2)} ≥ 0.15 or price off floor)")
-                mx = c.get('maCross') or {}
-                if is15m and mx.get('verdict'):
-                    lines.append(f"    macross MA20={_n(mx.get('ma20'))} MA50={_n(mx.get('ma50'))} · {mx.get('verdict')} · cross {mx.get('cross')} ⭐")
-                else:
-                    lines.append(f"    macross MA20={_n(mx.get('ma20'))} MA50={_n(mx.get('ma50'))} · {mx.get('bias')} · cross {mx.get('cross')} (read 15m for truth)")
-                lines.append(f"    range={c.get('rangeSignal')} bias={c.get('rangeBias')} · stop {_n(rr.get('stopLoss'))} target {_n(rr.get('takeProfit'))}")
-                lines.append(f"    advisor buy {adv.get('buy')} sell {adv.get('sell')}")
-            self.signal_view.setPlainText("\n".join(lines))
+            set_html_keep_scroll(self.signal_view, _signal_preview_html(sig, _sig_src))
             self.signal_status.setText("available")
             self.signal_status.setStyleSheet("color:#22c55e")
         else:
-            self.signal_view.setPlainText(sig.get("error", "not run yet — click 'Run SignalBot now'"))
+            set_text_keep_scroll(self.signal_view, sig.get("error", "not run yet — click 'Run SignalBot now'"))
             self.signal_status.setText("not run")
             self.signal_status.setStyleSheet("color:#9ca3af")
         # treasury — in LIVE, reconcile from the exchange so the page cannot lie
@@ -1155,7 +1318,7 @@ class BlackHorse(AgentsMixin, QMainWindow):
                 f"heartbeat: {'OK' if st['heartbeat_ok'] else 'STALE/MISSING'} ({st['heartbeat_note']}) · "
                 f"orders last hour: {st['orders_last_hour']} · autonomy: {lock}")
             self.heart_status.setStyleSheet("color:green" if st["heartbeat_ok"] else "color:orange")
-            self.heart_caps.setPlainText(json.dumps(st["caps"], indent=2))
+            set_text_keep_scroll(self.heart_caps, json.dumps(st["caps"], indent=2))
             for key, sb in getattr(self, "_heart_cap_widgets", {}).items():
                 if key in st["caps"]:
                     sb.blockSignals(True)
@@ -1187,6 +1350,57 @@ class BlackHorse(AgentsMixin, QMainWindow):
             self._loop_proc.terminate()
         self.loop_status.setText("loop stopped")
 
+    # ================= CryptoBoqor site launcher (on Dashboard) =================
+    def _cb_running(self):
+        proc = getattr(self, "_cb_proc", None)
+        if proc is not None and proc.poll() is None:
+            return True
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.2)
+                return s.connect_ex(("127.0.0.1", CRYPTOBOQOR_PORT)) == 0
+        except Exception:
+            return False
+
+    def cb_launch(self):
+        if self._cb_running():
+            self.cb_status.setText(f"already running \u00b7 http://localhost:{CRYPTOBOQOR_PORT}")
+            self.cb_open(); return
+        if not (CRYPTOBOQOR_DIR / "server.js").exists():
+            self.cb_status.setText(f"server.js not found in {CRYPTOBOQOR_DIR}")
+            return
+        env = dict(os.environ); env.setdefault("PORT", str(CRYPTOBOQOR_PORT))
+        try:
+            self._cb_proc = subprocess.Popen(
+                ["node", "--max-old-space-size=384", "server.js"],
+                cwd=str(CRYPTOBOQOR_DIR), env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            self.cb_status.setText(f"launch failed: {e}"); return
+        self.cb_status.setText(f"starting (pid {self._cb_proc.pid})\u2026")
+        QTimer.singleShot(2500, self.cb_open)
+        QTimer.singleShot(4000, self.refresh_cb_status)
+
+    def cb_open(self):
+        QDesktopServices.openUrl(QUrl(f"http://localhost:{CRYPTOBOQOR_PORT}"))
+
+    def cb_stop(self):
+        proc = getattr(self, "_cb_proc", None)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+        self._cb_proc = None
+        self.cb_status.setText("stopped")
+
+    def refresh_cb_status(self):
+        if not hasattr(self, "cb_status"):
+            return
+        if self._cb_running():
+            self.cb_status.setText(
+                f"RUNNING \u00b7 http://localhost:{CRYPTOBOQOR_PORT}   ({CRYPTOBOQOR_DIR})")
+        else:
+            self.cb_status.setText("not running")
+
     def _show_profile(self):
         try:
             agents, _ = self._agents_mod()
@@ -1217,7 +1431,7 @@ class BlackHorse(AgentsMixin, QMainWindow):
             agents.set_enabled(agent_id, on)
             self.refresh_agents()
         except Exception as e:
-            self.house_view.setPlainText(f"toggle error: {e}")
+            set_text_keep_scroll(self.house_view, f"toggle error: {e}")
 
     def delete_agent(self):
         """Delete the selected agent — with verification. Shows exactly what will
@@ -1287,9 +1501,9 @@ class BlackHorse(AgentsMixin, QMainWindow):
                 lines.append(f"  entry {d.get('entry')} stop {d.get('stop')} target {d.get('target')} "
                              f"size ${d.get('size_quote')} R:R {d.get('rr')}")
             lines.append("  (UNVALIDATED — hypothesis only)")
-            self.house_view.setPlainText("\n".join(lines))
+            set_text_keep_scroll(self.house_view, "\n".join(lines))
         except Exception as e:
-            self.house_view.setPlainText(f"broker error: {e}")
+            set_text_keep_scroll(self.house_view, f"broker error: {e}")
 
 
     def _build_skin(self):
@@ -1372,8 +1586,10 @@ class BlackHorse(AgentsMixin, QMainWindow):
     def refresh_log(self):
         if LOG.exists():
             lines = LOG.read_text(errors="ignore").splitlines()[-300:]
-            self.log_view.setPlainText("\n".join(lines))
-            self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum())
+            # follow the tail only if the reader is already at the bottom; if they
+            # scrolled up to read, hold their place instead of snapping to the end.
+            with keep_scroll(self.log_view, stick_bottom=True):
+                self.log_view.setPlainText("\n".join(lines))
 
     def run_sweep(self):
         if not self._master_on():

@@ -10,7 +10,7 @@ Left: agent list. Right: tabs per agent —
             the bot's own six scenarios marked with which one each interval sits in now
 Everything on the right scrolls instead of squishing, and the split is draggable.
 """
-import json, time, sqlite3
+import json, time, sqlite3, html as _html
 from pathlib import Path
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
@@ -20,6 +20,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLa
                              QCheckBox)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QColor, QBrush
+
+from ui_util import keep_scroll, set_text_keep_scroll, set_html_keep_scroll
 
 BH = Path.home() / "blackhorse"
 GREEN, RED, GREY, AMBER = "#16a34a", "#dc2626", "#9ca3af", "#d97706"
@@ -117,17 +119,19 @@ def _table(headers, min_h=110):
 
 
 def _fill(t, rows, colors=None):
-    t.setRowCount(len(rows))
-    n = min(max(len(rows), 1), getattr(t, "_max_rows", 6))
-    t.setFixedHeight(t.horizontalHeader().height() + n * 26 + 10)
-    for r, row in enumerate(rows):
-        for c, val in enumerate(row):
-            it = QTableWidgetItem(str(val))
-            col = (colors or {}).get((r, c))
-            if col:
-                it.setForeground(QBrush(QColor(col)))
-            t.setItem(r, c, it)
-    t.resizeColumnsToContents()
+    # rebuilt on the 5s orders tick — hold the reader's scroll, don't reset it
+    with keep_scroll(t):
+        t.setRowCount(len(rows))
+        n = min(max(len(rows), 1), getattr(t, "_max_rows", 6))
+        t.setFixedHeight(t.horizontalHeader().height() + n * 26 + 10)
+        for r, row in enumerate(rows):
+            for c, val in enumerate(row):
+                it = QTableWidgetItem(str(val))
+                col = (colors or {}).get((r, c))
+                if col:
+                    it.setForeground(QBrush(QColor(col)))
+                t.setItem(r, c, it)
+        t.resizeColumnsToContents()
 
 
 def _box(title, widget):
@@ -383,35 +387,114 @@ def _why_html(d):
     return "".join(out)
 
 
-def _market_text(sig):
+def _market_html(sig):
+    """SignalBot's per-interval read as an HTML table, one column per lane.
+
+    Same treatment as the Trade page's manual preview: strength, trend, the
+    entry gate, range map and spread laid out side by side so the lanes are
+    read across instead of decoded line by line.
+    """
     if not sig or not sig.get("channels"):
-        return ("No SignalBot snapshot on disk yet — run SignalBot (Settings page) or wait for the "
-                "loop's next scan.")
-    lines = [f"{sig.get('pair')} @ {sig.get('exchange')} · strategy {sig.get('strategy')} · "
-             f"ran {_iso_ago(sig.get('ts'))} · took {(_num_or(sig.get('run_ms'), 0) or 0)/1000:.1f}s"]
-    for name, iv, c in _signal_channels(sig):
-        r = c.get("RSI") or {}
-        mr = c.get("marketResult") or {}
-        sm = c.get("spreadMA") or {}
+        return (f"<i style='color:{GREY}'>No SignalBot snapshot on disk yet — run SignalBot "
+                f"(Settings page) or wait for the loop's next scan.</i>")
+    MUTED, VAL, HEAD, BORDER, HEAD_BG = "#94a3b8", "#e5e7eb", "#a5b4fc", "#1e293b", "#0d1526"
+    ACT = {"BUY": "#22c55e", "SELL": "#ef4444", "HOLD": "#f59e0b"}
+
+    def esc(v):
+        return _html.escape(str(v)) if v not in (None, "") else "—"
+
+    def td(inner, color=None, align="left", bg=None, top=True):
+        style = "padding:4px 10px;"
+        if top:
+            style += "border-top:1px solid %s;" % BORDER
+        if bg:
+            style += "background-color:%s;" % bg
+        if color:
+            style += "color:%s;" % color
+        return '<td style="%s" align="%s">%s</td>' % (style, align, inner)
+
+    def mark(ok):
+        return '<span style="color:%s">%s</span>' % ("#22c55e" if ok else "#ef4444", "✓" if ok else "✗")
+
+    lanes = _signal_channels(sig)
+
+    def dir_cell(c):
+        d = c.get("strengthDirection")
+        arrow, col = {"rising": ("▲", "#22c55e"), "falling": ("▼", "#f59e0b")}.get(d, ("→", MUTED))
+        return "<b>%s</b> <span style='color:%s'>%s %s</span>" % (
+            _num(c.get("strength"), 3), col, arrow, esc(d))
+
+    def gate_cell(c):
         g = c.get("entryGate") or {}
-        lines.append("")
-        lines.append(f"{name:8s} {iv:>5}  {str(c.get('action') or '?'):5s}  "
-                     f"strength={_num(c.get('strength'), 3)} ({c.get('strengthDirection') or '?'})  "
-                     f"RSI={_num(r.get('currentRSI'), 1)}")
-        lines.append(f"   trend={mr.get('trendState')}  spread={mr.get('spreadDirection')} "
-                     f"(chg {_num(mr.get('spreadChange'), 4)}/{mr.get('spreadCount')})  "
-                     f"price={_px(c.get('currPrice'))}")
-        lines.append(f"   floor={_px(c.get('floor'))} low={_px(c.get('low'))} "
-                     f"high={_px(c.get('high'))} roof={_px(c.get('roof'))}")
-        if sm.get("available"):
-            lines.append(f"   MA10−MA30 {_num(sm.get('diff'), 4)} ({_num(sm.get('diffPct'), 3)}%) "
-                         f"{sm.get('signal')}")
-        lines.append(f"   entry gate: rsi={g.get('rsiOk')} spread={g.get('spreadNotAgainst')} "
-                     f"score={g.get('scoreOk')} eligible={g.get('entryEligible')} → "
-                     f"{'READY' if g.get('allPass') else 'not yet'}")
-        lines.append(f"   range={c.get('rangeSignal')} bias={c.get('rangeBias')}  "
-                     f"scenario: {c.get('setupScenario') or '—'}")
-    return "\n".join(lines)
+        badge = ("<b style='color:#22c55e'>READY</b>" if g.get("allPass")
+                 else "<span style='color:%s'>not yet</span>" % MUTED)
+        return "rsi %s · spread %s · score %s · entry %s · %s" % (
+            mark(g.get("rsiOk")), mark(g.get("spreadNotAgainst")), mark(g.get("scoreOk")),
+            mark(bool(g.get("entryEligible"))), badge)
+
+    def range_cell(c):
+        return "floor %s · low %s · high %s · roof %s" % (
+            _px(c.get("floor")), _px(c.get("low")), _px(c.get("high")), _px(c.get("roof")))
+
+    def spread_cell(c):
+        mr = c.get("marketResult") or {}
+        col = {"improving": "#22c55e", "weakening": "#ef4444"}.get(str(mr.get("spreadDirection")), MUTED)
+        out = "<span style='color:%s'>%s</span>" % (col, esc(mr.get("spreadDirection")))
+        chg = mr.get("spreadChange")
+        if chg is not None:
+            out += " <span style='color:%s'>· %+.3f/%s</span>" % (MUTED, chg, mr.get("spreadCount"))
+        return out
+
+    def ma_cell(c):
+        sm = c.get("spreadMA") or {}
+        if not sm.get("available"):
+            return "<span style='color:%s'>—</span>" % MUTED
+        s = str(sm.get("signal") or "")
+        col = "#22c55e" if s.startswith("bull") else ("#ef4444" if s.startswith("bear") else MUTED)
+        return "%s <span style='color:%s'>(%s%%)</span> <span style='color:%s'>%s</span>" % (
+            _num(sm.get("diff"), 4), MUTED, _num(sm.get("diffPct"), 3), col, esc(sm.get("signal")))
+
+    def bias_cell(c):
+        rs, rb = c.get("rangeSignal"), c.get("rangeBias")
+        return "<span style='color:%s'>%s</span> <span style='color:%s'>· %s</span>" % (
+            ACT.get(str(rs), MUTED), esc(rs), MUTED, esc(rb))
+
+    head = "<tr>" + td("<b>%s</b><br><span style='color:%s'>the bot's own read</span>" % (
+        esc(sig.get("pair")), MUTED), color=HEAD, bg=HEAD_BG, top=False)
+    for name, iv, c in lanes:
+        act = str(c.get("action") or "?")
+        head += td("<b>%s</b><br><span style='color:%s'>%s</span> <span style='color:%s'>%s</span>" % (
+            esc(name), MUTED, esc(iv), ACT.get(act, MUTED), act), bg=HEAD_BG, top=False, align="center")
+    head += "</tr>"
+
+    def row(label, fn):
+        cells = td(label, color=MUTED)
+        for _n, _iv, c in lanes:
+            cells += fn(c)
+        return "<tr>" + cells + "</tr>"
+
+    body = "".join([
+        row("action", lambda c: td("<b>%s</b>" % esc(c.get("action")),
+                                   color=ACT.get(str(c.get("action")), VAL), align="center")),
+        row("strength", lambda c: td(dir_cell(c), align="center")),
+        row("trend · RSI", lambda c: td("%s · <b>%s</b>" % (
+            esc((c.get("marketResult") or {}).get("trendState")),
+            esc(_num((c.get("RSI") or {}).get("currentRSI"), 1))), color=VAL)),
+        row("entry gate", lambda c: td(gate_cell(c))),
+        row("range map", lambda c: td(range_cell(c), color=VAL)),
+        row("spread", lambda c: td(spread_cell(c), color=VAL)),
+        row("MA10−MA30", lambda c: td(ma_cell(c), color=VAL)),
+        row("range · bias", lambda c: td(bias_cell(c))),
+        row("scenario", lambda c: td(esc(c.get("setupScenario")), color=VAL)),
+    ])
+
+    tbl = ('<table width="100%" cellspacing="0" cellpadding="0" border="0" style="border:1px solid '
+           + BORDER + ';">' + head + body + '</table>')
+    title = ("<div style='color:%s'><b style='color:%s'>%s</b> @ %s · strategy %s · ran %s · %s</div>"
+             "<div style='height:6px'></div>") % (
+        MUTED, VAL, esc(sig.get("pair")), esc(sig.get("exchange")), esc(sig.get("strategy")),
+        esc(_iso_ago(sig.get("ts"))), "%.1fs" % ((_num_or(sig.get("run_ms"), 0) or 0) / 1000))
+    return "<div style='color:%s'>%s%s</div>" % (VAL, title, tbl)
 
 
 def _num_or(v, d):
@@ -791,7 +874,7 @@ class AgentsMixin:
         v.addWidget(_box("Decisions it is making (newest first)", self.tbl_decisions))
         self.dec_market = QTextBrowser()
         self.dec_market.setFont(QFont("Monospace", 9))
-        self.dec_market.setMinimumHeight(240)
+        self.dec_market.setMinimumHeight(340)
         v.addWidget(_box("Where the market is — the SignalBot's own read (per interval)",
                          self.dec_market))
         self.dec_scenarios = QTextBrowser()
@@ -809,19 +892,20 @@ class AgentsMixin:
             cur = self._selected_agent()
             cur_id = cur["id"] if cur else None
             self._agent_rows = rows
-            self.agent_list.blockSignals(True)
-            self.agent_list.clear()
-            for a in rows:
-                on = a.get("enabled")
-                pairs = ",".join(a.get("pairs") or []) or "all pairs"
-                it = QListWidgetItem(f"{'● ' if on else '○ '}{a['name']}  ({a['id']})\n"
-                                     f"   {a.get('profile_label') or a.get('entry_interval') or '-'} · ${a['capital']} · {a.get('mode') or '-'}\n"
-                                     f"   {pairs.replace(',', ', ')}")
-                it.setForeground(QBrush(QColor(GREEN if on else GREY)))
-                self.agent_list.addItem(it)
-            sel = next((i for i, a in enumerate(rows) if a["id"] == cur_id), 0 if rows else -1)
-            self.agent_list.setCurrentRow(sel)
-            self.agent_list.blockSignals(False)
+            with keep_scroll(self.agent_list):
+                self.agent_list.blockSignals(True)
+                self.agent_list.clear()
+                for a in rows:
+                    on = a.get("enabled")
+                    pairs = ",".join(a.get("pairs") or []) or "all pairs"
+                    it = QListWidgetItem(f"{'● ' if on else '○ '}{a['name']}  ({a['id']})\n"
+                                         f"   {a.get('profile_label') or a.get('entry_interval') or '-'} · ${a['capital']} · {a.get('mode') or '-'}\n"
+                                         f"   {pairs.replace(',', ', ')}")
+                    it.setForeground(QBrush(QColor(GREEN if on else GREY)))
+                    self.agent_list.addItem(it)
+                sel = next((i for i, a in enumerate(rows) if a["id"] == cur_id), 0 if rows else -1)
+                self.agent_list.setCurrentRow(sel)
+                self.agent_list.blockSignals(False)
             self._show_profile()
             self._render_agent()
             try:
@@ -844,7 +928,7 @@ class AgentsMixin:
             except Exception:
                 pass
         except Exception as e:
-            self.house_view.setPlainText(f"agents error: {e}")
+            set_text_keep_scroll(self.house_view, f"agents error: {e}")
 
     def _selected_agent(self):
         i = self.agent_list.currentRow() if hasattr(self, "agent_list") else -1
@@ -869,13 +953,15 @@ class AgentsMixin:
     def _render_agent(self):
         a = self._selected_agent()
         if not a:
-            self.ag_overview.setHtml("<i>No agents yet — create one above.</i>")
+            with keep_scroll(self.ag_overview):
+                self.ag_overview.setHtml("<i>No agents yet — create one above.</i>")
             return
         agents, _ = self._agents_mod()
         try:
             pol = agents.policy_for(a["id"])
         except Exception as e:
-            self.ag_overview.setHtml(f"<pre>error: {e}</pre>")
+            with keep_scroll(self.ag_overview):
+                self.ag_overview.setHtml(f"<pre>error: {e}</pre>")
             return
         self._render_overview(a, pol)
         self._render_settings(a, pol)
@@ -922,10 +1008,11 @@ class AgentsMixin:
         foot = ("Stop loss is ON — a protective %s stop rests a maker limit near the level." % pol.get("stop_mode", "price_watch")
                 if pol.get("stop_loss_enabled")
                 else "No stop orders: positions only sell at a net profit after fees (enable Stop loss to change this).")
-        self.ag_overview.setHtml(
-            f"<h2 style='margin-bottom:2px'>{a.get('name')} <span style='color:{GREY};font-size:13px'>"
-            f"{a['id']}</span></h2><p style='color:{GREY}'>{desc}</p><table>{body}</table>"
-            f"<p style='color:{GREY};font-size:11px'>{foot}</p>")
+        with keep_scroll(self.ag_overview):
+            self.ag_overview.setHtml(
+                f"<h2 style='margin-bottom:2px'>{a.get('name')} <span style='color:{GREY};font-size:13px'>"
+                f"{a['id']}</span></h2><p style='color:{GREY}'>{desc}</p><table>{body}</table>"
+                f"<p style='color:{GREY};font-size:11px'>{foot}</p>")
 
     def _budget_html(self, agent_id):
         r = getattr(self, "_agent_audit", {}).get(agent_id)
@@ -1277,11 +1364,14 @@ class AgentsMixin:
                 return
             cur = self.agent_tabs.currentWidget()
             if cur is self.ag_orders_scroll:
-                self._refresh_orders_tab()
+                # hold the tab's own scroll too: the tables/browsers are rebuilt here
+                with keep_scroll(self.ag_orders_scroll):
+                    self._refresh_orders_tab()
             elif cur is self.ag_decisions_scroll:
                 a = self._selected_agent()
                 if a:
-                    self._render_decisions(a)
+                    with keep_scroll(self.ag_decisions_scroll):
+                        self._render_decisions(a)
         except Exception:
             pass
 
@@ -1322,7 +1412,8 @@ class AgentsMixin:
         if self._ord_pos_rows:
             self.tbl_pos.selectRow(keep if 0 <= keep < len(rows) else 0)
         else:
-            self.pos_detail.setHtml(f"<i style='color:{GREY}'>No open positions for this agent.</i>")
+            with keep_scroll(self.pos_detail):
+                self.pos_detail.setHtml(f"<i style='color:{GREY}'>No open positions for this agent.</i>")
         _fill(self.tbl_orders, [[time.strftime("%m-%d %H:%M", time.localtime(o["created"])), o["side"].upper(),
                                  o["order_type"], _px(o.get("avg_price") or o.get("price")), _px(o["vol"], 6),
                                  _px(o.get("vol_exec"), 6), _px(o.get("fee"), 4), o["status"], o.get("txid")]
@@ -1376,7 +1467,8 @@ class AgentsMixin:
         else:
             tail = (f"<p style='color:{GREY}'>Sells when bid ≥ the lowest PASSING stored price, or when a strategy channel is in its "
                     f"sell zone and the bid itself is profitable. No stop armed.</p>")
-        self.pos_detail.setHtml("<br>".join(lines) + "<br>" + tbl + tail)
+        with keep_scroll(self.pos_detail):
+            self.pos_detail.setHtml("<br>".join(lines) + "<br>" + tbl + tail)
 
     # ---------------------------------------------------------------- decisions tab
     def _render_decisions(self, a):
@@ -1400,21 +1492,23 @@ class AgentsMixin:
                      + (f" @ {sig.get('pair')}" if sig.get("pair") else "") + "</span>")
         self.dec_summary.setText(head)
 
-        self.dec_why.setHtml(_why_html(last))
-        pol = {}
-        try:
-            pol = self._agents_mod()[0].policy_for(a["id"])
-        except Exception:
-            pass
-        self.dec_chain.setHtml(_chain_html(strength_chain(pol, sig)))
+        # these four browsers are repainted on the 5s decisions tick — hold scroll
+        with keep_scroll(self.dec_why, self.dec_chain, self.dec_market, self.dec_scenarios):
+            self.dec_why.setHtml(_why_html(last))
+            pol = {}
+            try:
+                pol = self._agents_mod()[0].policy_for(a["id"])
+            except Exception:
+                pass
+            self.dec_chain.setHtml(_chain_html(strength_chain(pol, sig)))
 
-        rows, colors = [], {}
-        for i, d in enumerate(decs):
-            act = str(d.get("action") or "")
-            rows.append([_ago(d.get("ts")), act, d.get("pair") or "—", d.get("channel") or "—",
-                         d.get("reason") or ""])
-            colors[(i, 1)] = {"BUY": GREEN, "SELL": RED}.get(act, GREY)
-        _fill(self.tbl_decisions, rows, colors)
+            rows, colors = [], {}
+            for i, d in enumerate(decs):
+                act = str(d.get("action") or "")
+                rows.append([_ago(d.get("ts")), act, d.get("pair") or "—", d.get("channel") or "—",
+                             d.get("reason") or ""])
+                colors[(i, 1)] = {"BUY": GREEN, "SELL": RED}.get(act, GREY)
+            _fill(self.tbl_decisions, rows, colors)
 
-        self.dec_market.setPlainText(_market_text(sig))
-        self.dec_scenarios.setHtml(_scenarios_html(sig))
+            set_html_keep_scroll(self.dec_market, _market_html(sig))
+            self.dec_scenarios.setHtml(_scenarios_html(sig))
