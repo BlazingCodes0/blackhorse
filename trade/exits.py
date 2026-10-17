@@ -276,10 +276,12 @@ def _exit_now(portfolio, execute, pos, pair, mode, reason, stop, need, ask, st, 
     pid = pos["id"]
     if mode == "LIVE":
         if pos.get("exit_txid"):                         # a resting stop was armed -> drop it
-            try:
-                execute.cancel(pos["exit_txid"], pair)
-            except Exception:
-                pass
+            if not execute.cancel_verified(pos["exit_txid"], pair):
+                # Could not confirm the resting stop is gone — do NOT rest a second sell.
+                st["result"] = {"ok": False, "reason": "resting exit not confirmed cancelled"}
+                events.append({"position": pid, "reason": reason, "ok": False,
+                               "error": "cancel-not-confirmed"})
+                return
             _set_pos_field(pid, "exit_txid", None, remove=True)
         is_stop = bool(stop.get("trigger_reason")) and not st.get("profit_exit")
         px = ask if is_stop else max(need, ask)
