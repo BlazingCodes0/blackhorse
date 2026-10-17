@@ -556,19 +556,28 @@ def _live_order(plan: dict, pair: str) -> dict:
                 pass
             return {"ok": True, "mode": "LIVE", "txid": txid, "filled": False,
                     "time_in_force": tif, "reason": f"{tif} order did not fill (killed)"}
-        fill = float(price) or (kraken_last_price(pair) or 0)
-        qty_rec, fee_rec = volume, None
-        if real:                                  # record what the exchange actually did
-            fill, qty_rec, fee_rec = real["price"], real["vol"], real["fee"]
+        if not real:
+            # We could NOT confirm what the exchange did. Never open a position from a
+            # guessed price/size — that books a phantom trade with a wrong fee and leaves
+            # untradeable dust behind. Mark the order unverified and book nothing; the
+            # balance is the truth and reconcile will settle any real remainder.
             try:
                 import store
-                store.live_order_result(txid, "FILLED", real["vol"], real["price"], real["fee"])
+                store.live_order_result(txid, "UNVERIFIED", 0.0, None, 0.0)
             except Exception:
                 pass
+            return {"ok": False, "mode": "LIVE", "txid": txid, "unverified": True,
+                    "reason": "fill not confirmed on the exchange; position not booked"}
+        fill, qty_rec, fee_rec = real["price"], real["vol"], real["fee"]
+        try:
+            import store
+            store.live_order_result(txid, "FILLED", real["vol"], real["price"], real["fee"])
+        except Exception:
+            pass
         pos = portfolio.open_position(agent=plan.get("agent", "house"), pair=pair, side="BUY",
                                       entry=fill, qty=qty_rec, stop=plan.get("stop"),
                                       target=plan.get("target"), venue=heart_venue(),
-                                      note=f"LIVE buy {txid}" + ("" if real else " (fill unverified)"),
+                                      note=f"LIVE buy {txid}",
                                       mode="LIVE", fee=fee_rec, entry_snapshot=snapshot)
     else:
         opened = [p for p in portfolio.open_positions()
