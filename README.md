@@ -135,7 +135,10 @@ Connection, money, signal, and the autonomous loop — the main control room.
 - **Memory / News** — ephemeral vs permanent memory counts, and the market/macro
   headlines that feed the brain.
 - **SignalBot** — **▶ Run SignalBot now** runs the *real* SignalBot via its
-  sidecar (no reimplementation), then shows the per-interval read. Set the
+  sidecar (no reimplementation), then shows the per-interval read as a **table**
+  — one column per interval, with action, confidence, strength (▲/▼), trend·RSI,
+  entry/exit eligibility, spread, MA10−MA30, macross, range·bias, stop/target,
+  advisor and scenario, plus a strength-chain-gate footnote. Set the
   **intervals** and **pair**, then **Save signal setup**
   (`config/signal_setup.json`).
 - **Autonomous loop** — **▶ Start loop** / **■ Stop loop**, with an `every N s`
@@ -155,12 +158,18 @@ Selecting one opens three tabs.
   - **Strength chain** — the agent's entry lane and every climb rung, with each
     rung's live strength and its buy/sell band, and whether it currently clears.
   - **Decisions it is making** — the last 25 recorded decisions.
-  - **Where the market is** — SignalBot's per-interval read.
+  - **Where the market is** — SignalBot's own per-interval read, as a **table**
+    (one column per lane): action, strength, trend·RSI, the entry gate (rsi ·
+    spread · score → READY/not yet), range map, spread, MA10−MA30 and scenario.
   - **Scenarios** — the six-scenario rubric with the active one marked `◀`.
 
   The Decisions tab is **read-only** — it reads the `decisions` table and the
   bot's written signal snapshots and never runs the bot or trades; it refreshes
   every 5s while visible.
+
+> The SignalBot readouts and the other timer-refreshed panes **hold your scroll
+> position** while they repaint, so you can read a long pane without it snapping
+> back to the top every 5–10s.
 
 - **Settings** — per-agent policy, written back to the agent on **Save to agent
   policy** (applies on the trader's next cycle, ≤5 min). See *Agents, intervals &
@@ -195,6 +204,9 @@ The loop is the autonomous heartbeat (`trade/loop.py`). One cycle:
 9. **RECORD** — write memory and logs.
 
 It is **fail-closed**: if the Heart blocks or anything throws, nothing moves.
+The `--interval` cadence is measured **from the start of each cycle**, so a slow
+SignalBot scan eats into the sleep instead of pushing the next run out — `--interval
+300` really means every ~5 minutes.
 
 Run it:
 
@@ -279,7 +291,7 @@ books the worse of level/bid, not the idealized level.
 ## Files & layout
 
 ```
-app/        PyQt6 desktop app (main.py + agents_ui.py)
+app/        PyQt6 desktop app (main.py + agents_ui.py + ui_util.py)
 trade/      the loop, agents, decider, broker, heart, exchanges, portfolio
 skin/       defense/monitoring layer (dry-run by default)
 heart/      referee policies (rules.json) + playbooks
@@ -294,7 +306,9 @@ install_launcher.sh   optional desktop launcher
 Key files:
 
 - `config/agents.json` — the agents and their per-agent `policy_overrides`.
-- `config/trading.json` — `autonomous`, `mode`, `watchlist`, interval seconds.
+- `config/trading.json` — `autonomous`, `mode`, `watchlist`, interval seconds,
+  and `hold_log_gap_s` (0 = log every HOLD/SKIP decision each cycle; omit or set
+  a positive number of seconds to throttle them).
 - `config/decider.json` — decider policy, band defaults, stop-loss defaults.
 - `config/signal_setup.json` — SignalBot pair + channels.
 - `config/skin_settings.json` — `master_enabled`, engines, LLM/brain knobs.
