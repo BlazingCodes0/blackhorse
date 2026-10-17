@@ -22,6 +22,7 @@
   "mtf_buy_override": true,
   "comment2": "STRENGTH CLIMB (no profiles anymore — intervals are the profiles). The SMALLEST interval listed for an agent is its ENTRY (trading) lane; every interval LISTED above it is a climb rung (60m -> 240m -> 1440m) that must clear its own band before the entry lane may move. Listing only the entry interval = climb off = the lane trades on its own strength. Rung bands (entry_strength_max_<iv>/exit_strength_min_<iv>) are agent-tuned overrides that fall back to that agent's own entry_strength_max/exit_strength_min. The GUI builds this list from its entry button + the climb toggles.",
   "entry_order_type": "limit",
+  "entry_time_in_force": "GTD",
   "entry_expiry_seconds": 600,
   "exit_price_sets": [
     "average"

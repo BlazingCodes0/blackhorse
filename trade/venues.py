@@ -161,7 +161,7 @@ class Exchange:
     def balance(self):
         raise NotImplementedError
 
-    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None):
+    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None, time_in_force="GTC"):
         raise NotImplementedError
 
     def cancel(self, order_id, pair=None):
@@ -310,9 +310,21 @@ class Kraken(Exchange):
         self._bal["v"], self._bal["ts"] = dict(out), time.time()
         return out
 
-    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None):
+    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None, time_in_force="GTC"):
         body = {"nonce": str(int(time.time() * 1000)), "pair": self._native(pair),
                 "type": side.lower(), "ordertype": order_type.lower(), "volume": str(volume)}
+        tif = str(time_in_force or "GTC").upper()
+        if tif == "IOC":
+            body["timeinforce"] = "ioc"
+        elif tif == "GTD":
+            body["timeinforce"] = "gtd"                 # Kraken: GTD must pair with expiretm
+            if expire_s:
+                body["expiretm"] = f"+{int(expire_s)}"
+        elif tif == "FOK":
+            if not price or float(price) <= 0:
+                return {"ok": False, "error": "FOK requires a limit price", "result": None}
+            body["timeinforce"] = "fok"
+            body["price"] = str(price)
         if order_type.lower() == "limit" and price is not None:
             body["price"] = str(price)
             if expire_s:
@@ -426,11 +438,12 @@ class Binance(Exchange):
                 out[b["asset"].upper()] = out.get(b["asset"].upper(), 0) + amt
         return out
 
-    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None):
+    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None, time_in_force="GTC"):
         p = {"symbol": self._native(pair), "side": side.upper(), "type": order_type.upper(), "quantity": volume}
+        tif = str(time_in_force or "GTC").upper()
         if order_type.lower() == "limit":
             p["price"] = price
-            p["timeInForce"] = "GTC"
+            p["timeInForce"] = tif if tif in ("GTC", "IOC", "FOK") else "GTC"
         try:
             r = self._signed("POST", "/api/v3/order", p)
         except urllib.error.HTTPError as e:
@@ -565,9 +578,17 @@ class Coinbase(Exchange):
                 out[a["currency"].upper()] = out.get(a["currency"].upper(), 0) + amt
         return out
 
-    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None):
-        cfg = {"limit_limit_gtc": {"base_size": str(volume), "limit_price": str(price)}} \
-            if order_type.lower() == "limit" else {"market_market_ioc": {"base_size": str(volume)}}
+    def place_order(self, pair, side, order_type, volume, price=None, expire_s=None, time_in_force="GTC"):
+        tif = str(time_in_force or "GTC").upper()
+        if order_type.lower() == "limit":
+            key = {"GTC": "limit_limit_gtc", "GTD": "limit_limit_gtd",
+                   "IOC": "limit_limit_ioc", "FOK": "limit_limit_fok"}.get(tif, "limit_limit_gtc")
+            cfg = {key: {"base_size": str(volume), "limit_price": str(price)}}
+            if tif == "GTD" and expire_s:
+                cfg[key]["end_time"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                     time.gmtime(time.time() + int(expire_s)))
+        else:
+            cfg = {"market_market_ioc": {"base_size": str(volume)}}
         body = {"client_order_id": __import__("uuid").uuid4().hex, "product_id": self._native(pair),
                 "side": side.upper(), "order_configuration": cfg}
         try:
@@ -671,8 +692,8 @@ def invalidate_balance():
     Kraken._bal["ts"] = 0.0
 
 
-def place_order(pair, side, order_type, volume, price=None, expire_s=None):
-    return active().place_order(pair, side, order_type, volume, price, expire_s)
+def place_order(pair, side, order_type, volume, price=None, expire_s=None, time_in_force="GTC"):
+    return active().place_order(pair, side, order_type, volume, price, expire_s, time_in_force)
 
 
 def cancel(order_id, pair=None):

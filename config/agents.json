@@ -175,6 +175,7 @@
       "policy_overrides": {
         "min_reward_risk": 2.0,
         "entry_order_type": "limit",
+        "entry_time_in_force": "GTD",
         "strategy": "custom",
         "strategy_intervals": [
           "60m",

@@ -298,6 +298,20 @@ def sweep(refresh_signal=True, ask_brain=True, pair=None, cfg=None, pairs=None) 
     except Exception:
         pass
 
+    # exchange is the truth: settle any order the venue no longer holds open and
+    # close locally-OPEN positions that were closed/moved OUTSIDE BlackHorse, so
+    # the ledger stops counting funds that aren't actually there.
+    try:
+        import execute as _ex4
+        rc = _ex4.reconcile()
+        if rc.get("orders") or rc.get("positions"):
+            rec["reconcile"] = {"orders": rc.get("orders"),
+                                "positions": rc.get("positions")}
+        if rc.get("ok") is None and rc.get("error"):
+            rec["reconcile_error"] = rc["error"]
+    except Exception as e:
+        rec["reconcile_error"] = str(e)
+
     # exchange is the truth: flag any ledger/exchange drift every sweep
     try:
         import portfolio as _pf
@@ -370,6 +384,17 @@ def cycle(refresh_signal=True, ask_brain=True, pair=None, cfg=None) -> dict:
 def daemon(interval=300, **kw):
     _install_signals()
     print(f"BlackHorse loop awake — every {interval}s")
+    # BOOT RECONCILE: before we decide anything, ask the exchange what is really
+    # open (orders + positions). This is what stops a position closed by hand on
+    # Kraken, or while the bot was down, from being counted as tied-up forever.
+    try:
+        import execute
+        rc = execute.reconcile()
+        print(json.dumps({"boot_reconcile": {"orders": rc.get("orders"),
+                                             "positions": rc.get("positions"),
+                                             "error": rc.get("error")}}))
+    except Exception as e:
+        print(json.dumps({"boot_reconcile": f"error: {e}"}))
     reason = "clean exit"
     try:
         while not _STOP:
