@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS orders (
   exchange_order_id TEXT,             -- once the venue acknowledges
   agent TEXT, source TEXT,            -- 'spice' | 'agent:<id>' | 'house'
   mode TEXT,                          -- PAPER | LIVE
-  reason TEXT, raw TEXT
+  reason TEXT, raw TEXT,
+  time_in_force TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fills (
@@ -110,7 +111,7 @@ def init() -> dict:
             ("positions", "net", "REAL"),
             ("orders", "expires", "REAL"), ("orders", "snapshot", "TEXT"),
             ("orders", "vol_exec", "REAL"), ("orders", "avg_price", "REAL"),
-            ("orders", "fee", "REAL"), ("orders", "outlay", "REAL")):
+            ("orders", "fee", "REAL"), ("orders", "outlay", "REAL"), ("orders", "time_in_force", "TEXT")):
         try:
             con.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {typ}")
         except Exception:
@@ -135,7 +136,7 @@ def client_order_id(source: str, pair: str, side: str, amount_quote: float) -> s
 
 def create_order(source, pair, side, order_type, price=None, amount_base=None,
                  amount_quote=None, agent=None, mode="PAPER", reason=None,
-                 coid=None) -> dict:
+                 coid=None, time_in_force="GTC") -> dict:
     """Insert an order. Idempotent on client_order_id: a duplicate returns the
     existing row and does NOT create a second order."""
     init()
@@ -144,10 +145,10 @@ def create_order(source, pair, side, order_type, price=None, amount_base=None,
     try:
         cur = con.execute(
             "INSERT INTO orders(client_order_id, created, updated, venue, pair, side, "
-            "order_type, price, amount_base, amount_quote, status, agent, source, mode, reason) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "order_type, price, amount_base, amount_quote, status, agent, source, mode, reason, time_in_force) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (coid, _now(), _now(), _active_venue(), pair, side, order_type,
-             price, amount_base, amount_quote, "NEW", agent, source, mode, reason))
+             price, amount_base, amount_quote, "NEW", agent, source, mode, reason, time_in_force or "GTC"))
         con.commit()
         row = _order_row(con, cur.lastrowid)
         return {"created": True, "order": row}
@@ -178,6 +179,15 @@ def add_fill(order_id, price, amount, fee=0.0, fee_currency=None, exchange_fill_
 def open_orders(limit=50) -> list:
     con = connect()
     rows = con.execute("SELECT * FROM orders WHERE status IN ('NEW','OPEN','PARTIAL') "
+                       "ORDER BY created DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def live_open_orders(limit=200) -> list:
+    """Locally working LIVE orders that carry an exchange id — the reconcile set."""
+    con = connect()
+    rows = con.execute("SELECT * FROM orders WHERE status IN ('NEW','OPEN','PARTIAL') "
+                       "AND mode='LIVE' AND exchange_order_id IS NOT NULL "
                        "ORDER BY created DESC LIMIT ?", (limit,)).fetchall()
     return [dict(r) for r in rows]
 
@@ -279,21 +289,22 @@ def stats() -> dict:
 # ---- LIVE mirror: the exchange truth lands here ------------------------------
 
 def live_order(txid, agent, pair, side, order_type, price, volume, outlay=None,
-               expires=None, plan=None, snapshot=None, status="OPEN") -> bool:
+               expires=None, plan=None, snapshot=None, status="OPEN", time_in_force="GTC") -> bool:
     """Record a REAL exchange order the moment it is accepted. Idempotent on txid."""
     init()
     con = connect()
     con.execute(
         "INSERT OR IGNORE INTO orders(client_order_id, created, updated, venue, pair, side, order_type, "
         "price, amount_base, amount_quote, status, exchange_order_id, agent, source, mode, reason, "
-        "expires, snapshot, outlay, raw) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "expires, snapshot, outlay, raw, time_in_force) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         ("kr_" + str(txid), _now(), _now(), _active_venue() or "kraken", pair, side, order_type,
          price, volume, (price or 0) * volume if price else None, status, txid, agent,
          "agent:" + str(agent), "LIVE", (plan or {}).get("reason"), expires,
          json.dumps(snapshot) if snapshot else None, outlay,
          json.dumps({k: v for k, v in (plan or {}).items() if k in
                      ("channel", "entry", "stop", "target", "size_quote", "outlay_quote",
-                      "order_type", "expiry_s", "rr", "evidence")}, default=str)))
+                      "order_type", "expiry_s", "rr", "evidence")}, default=str),
+         (plan or {}).get("time_in_force") or time_in_force or "GTC"))
     con.commit()
     return True
 

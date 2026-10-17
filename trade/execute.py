@@ -60,16 +60,18 @@ def cancel(txid: str, pair: str = None) -> dict:
 def manual_order(text: str):
     """Parse: create order BUY|SELL DOT/USD market 5
               create order BUY|SELL DOT/USD limit 1.20 5
+              create order BUY|SELL DOT/USD limit 1.20 5 ioc   (optional GTC|IOC|GTD|FOK)
               cancel order <txid>
     Returns a friendly string result, or None if not a manual-order command."""
     import re
     t = text.strip().lower()
-    m = re.match(r"create order (buy|sell) (\S+) (market|limit) ([0-9.]+)(?: ([0-9.]+))?", t)
+    m = re.match(r"create order (buy|sell) (\S+) (market|limit) ([0-9.]+)(?: ([0-9.]+))?(?: (gtc|ioc|gtd|fok))?", t)
     if m:
         side, pair_raw, typ, p1, p2 = m.group(1), m.group(2), m.group(3), float(m.group(4)), (float(m.group(5)) if m.group(5) else None)
+        tif = (m.group(6) or "gtd").upper()
         pair = _norm_pair(pair_raw)
         plan = {"action": side.upper(), "order_type": typ, "entry": p1,
-                "size_quote": p2 or p1}
+                "size_quote": p2 or p1, "time_in_force": tif}
         if typ == "limit":
             plan["price"] = p1
         try:
@@ -340,7 +342,8 @@ def sync_pending() -> list:
         except Exception:
             pass
         if st in ("pending", "open"):
-            if time.time() > float(p.get("expires", 0)) + 90:
+            exp = p.get("expires")
+            if exp and time.time() > float(exp) + 90:   # GTC with no expiry rests until cancelled
                 try:
                     venues.cancel(p["txid"], p.get("pair"))
                 except Exception:
@@ -367,6 +370,16 @@ def sync_pending() -> list:
     return events
 
 
+def _expiry_for(tif: str, plan: dict):
+    """Seconds-until-cancel for a resting limit, per time-in-force:
+    GTD -> explicit expiry (expiry_s, default 600); IOC/FOK never rest; GTC rests
+    until explicitly cancelled (None)."""
+    tif = str(tif or "GTC").upper()
+    if tif == "GTD":
+        return int(plan.get("expiry_s") or 600)
+    return None
+
+
 def _live_order(plan: dict, pair: str) -> dict:
     """Place a REAL Kraken order. BUY: sized so notional + BASE-tier fee <= cash
     available (never overshoots); default a LIMIT at the plan's entry with an expiry,
@@ -382,6 +395,12 @@ def _live_order(plan: dict, pair: str) -> dict:
     base = pair.split("/")[0].upper()
     info = fees.pair_info(pair)
     expire = None
+    # Time-in-force is separate from order type: limit/market (how) vs
+    # GTC/IOC/GTD/FOK (how long / how much must fill). Default GTD preserves the
+    # long-standing behaviour that resting limit entries carry an expiry.
+    tif = str(plan.get("time_in_force") or "GTD").upper()
+    if tif not in ("GTC", "IOC", "GTD", "FOK"):
+        tif = "GTD"
 
     if plan["action"] == "SELL" and not plan.get("manual"):
         return {"ok": False, "blocked": True,
@@ -398,7 +417,7 @@ def _live_order(plan: dict, pair: str) -> dict:
                 return {"ok": False, "blocked": True,
                         "reason": "limit sell needs a price (or set order_type=market)"}
             price = round(float(price), info["pair_decimals"])
-            expire = int(plan.get("expiry_s") or 600)
+            expire = _expiry_for(tif, plan)
     else:
         if plan.get("agent") and has_pending(plan["agent"], pair):
             return {"ok": False, "blocked": True, "reason": "an entry order is already working for this agent/pair"}
@@ -427,7 +446,7 @@ def _live_order(plan: dict, pair: str) -> dict:
             return {"ok": False, "blocked": True,
                     "reason": f"size too small after fees: {volume} {base} (min {info.get('ordermin')})"}
         if otype == "limit":
-            expire = int(plan.get("expiry_s") or 600)
+            expire = _expiry_for(tif, plan)
 
     snapshot = None
     if plan["action"] == "BUY":
@@ -439,8 +458,10 @@ def _live_order(plan: dict, pair: str) -> dict:
     if os.environ.get("BH_VALIDATE_ONLY"):
         return {"ok": True, "validated": True,
                 "body": {"pair": pair, "type": side, "ordertype": otype, "volume": str(volume),
-                         **({"price": str(price), "expiretm": f"+{expire}"} if otype == "limit" and price is not None else {})}}
-    res = venues.place_order(pair, side, otype, volume, price, expire)
+                         "timeinforce": tif,
+                         **({"price": str(price), "expiretm": f"+{expire}"} if otype == "limit" and price is not None and expire else {}),
+                         **({"price": str(price)} if otype == "limit" and price is not None and not expire else {})}}
+    res = venues.place_order(pair, side, otype, volume, price, expire, tif)
     invalidate_balance()
     if not res.get("ok"):
         return {"ok": False, "blocked": True, "reason": f"order rejected: {res.get('error')}"}
@@ -450,22 +471,33 @@ def _live_order(plan: dict, pair: str) -> dict:
         store.live_order(txid, plan.get("agent", "house"), pair, side, otype, price if otype == "limit" else None,
                          volume, outlay=round(volume * float(price or 0) * (1 + (reserve if side == "buy" else 0)), 8)
                          if price else None, expires=(time.time() + expire) if expire else None,
-                         plan=plan, snapshot=snapshot)
+                         plan=plan, snapshot=snapshot, time_in_force=tif)
     except Exception:
         pass
     if plan["action"] == "BUY":
-        if otype == "limit":
+        if otype == "limit" and tif in ("GTC", "GTD"):
             pend = _pend_load()
             pend.append({"txid": txid, "agent": plan.get("agent", "house"), "pair": pair, "price": price,
                          "volume": volume, "stop": plan.get("stop"), "target": plan.get("target"),
                          "outlay": round(volume * price * (1 + reserve), 8), "placed": time.time(),
-                         "expires": time.time() + expire, "snapshot": snapshot})
+                         "expires": (time.time() + expire) if expire else None, "tif": tif,
+                         "snapshot": snapshot})
             _pend_save(pend)
             return {"ok": True, "mode": "LIVE", "txid": txid, "pending": True, "price": price,
-                    "volume": volume, "expires_in_s": expire, "result": res.get("result")}
+                    "volume": volume, "time_in_force": tif,
+                    "expires_in_s": expire, "result": res.get("result")}
+        # market, or an immediate (IOC/FOK) limit: settle now from the exchange truth
+        real = kraken_fill(txid, pair) if txid else None
+        if (tif in ("IOC", "FOK")) and not real:
+            try:
+                import store
+                store.live_order_result(txid, "CANCELED", 0.0, None, 0.0)
+            except Exception:
+                pass
+            return {"ok": True, "mode": "LIVE", "txid": txid, "filled": False,
+                    "time_in_force": tif, "reason": f"{tif} order did not fill (killed)"}
         fill = float(price) or (kraken_last_price(pair) or 0)
         qty_rec, fee_rec = volume, None
-        real = kraken_fill(txid, pair) if txid else None
         if real:                                  # record what the exchange actually did
             fill, qty_rec, fee_rec = real["price"], real["vol"], real["fee"]
             try:
@@ -534,7 +566,7 @@ def sell_position(pos_id: str, reason: str, price: float = None,
     try:
         import store
         store.live_order(txid, pos.get("agent"), pair, "sell", "limit", price, volume,
-                         plan={"reason": reason}, status="OPEN")
+                         plan={"reason": reason}, status="OPEN", time_in_force="GTC")
     except Exception:
         pass
     d = portfolio._load()                         # mark it selling so we never double-fire
@@ -671,6 +703,152 @@ def sync_exits() -> list:
     return events
 
 
+RECONCILE = BH / "logs" / "reconcile_log.json"
+
+
+def _reconcile_orders() -> list:
+    """Settle locally-working LIVE orders the exchange no longer holds open.
+    A crash mid-order, or a hand-cancel on the venue, can otherwise leave a
+    phantom working order that still ties up cash in pending_outlay()."""
+    import store
+    events = []
+    for r in store.live_open_orders():
+        txid, pair = r.get("exchange_order_id"), r.get("pair")
+        if not txid:
+            continue
+        try:
+            o = venues.orders([(txid, pair)]).get(txid)
+        except Exception:
+            continue
+        if not o:
+            continue
+        st = o.get("status")
+        vol = float(o.get("vol_exec") or 0)
+        if st in ("closed", "canceled", "expired", "partial"):
+            status = {"closed": "FILLED", "canceled": "CANCELED", "expired": "EXPIRED",
+                      "partial": "PARTIAL"}.get(st, str(st).upper())
+            try:
+                store.live_order_result(txid, status, vol,
+                                        float(o.get("price") or 0) or None,
+                                        float(o.get("fee") or 0))
+            except Exception:
+                pass
+            events.append({"txid": txid, "pair": pair, "status": status, "vol_exec": vol})
+    return events
+
+
+def reconcile(settle_orders: bool = True, settle_positions: bool = True,
+              tol_pct: float = 1.0) -> dict:
+    """Exchange-is-truth reconciliation — run at boot and every sweep.
+
+    Two jobs the normal path leaves implicit:
+      1. ORDERS: any locally-working LIVE order the exchange no longer holds open
+         is settled from the exchange, so a crash or a hand-cancel can't strand a
+         phantom order that still ties up cash.
+      2. POSITIONS: any locally-open LIVE BUY the exchange no longer holds the
+         quantity for was closed/moved OUTSIDE BlackHorse (manual sell, withdrawal,
+         or sold while we were down). We shrink/close it locally at the last price
+         and release the capital, so deployed() stops counting funds that aren't there.
+
+    A failed balance read is UNKNOWN, never zero: positions are left untouched.
+    Read-only on the exchange — never sends an order, never counter-attacks."""
+    import time, portfolio
+    out = {"ts": time.time(), "orders": [], "positions": [], "ok": None}
+    if settle_orders:
+        try:
+            out["orders"] = _reconcile_orders()
+        except Exception as e:
+            out["orders_error"] = str(e)
+    if not settle_positions:
+        _write_reconcile(out)
+        return out
+    bal = {}
+    for _ in range(3):                # a transient blip must not silently skip reconciliation
+        try:
+            bal = kraken_balance()
+        except Exception:
+            bal = {}
+        if bal:
+            break
+        invalidate_balance()          # drop any cached read; ask the venue again
+        time.sleep(1.0)
+    if not bal:                       # {} == read failed, NOT "you hold nothing"
+        out["error"] = "balance unavailable (read failed) - positions not compared"
+        _write_reconcile(out)
+        return out
+
+    opens = [p for p in portfolio.open_positions()
+             if p.get("mode") == "LIVE" and str(p.get("side")).upper() == "BUY"]
+    by_asset = {}
+    for p in sorted(opens, key=lambda x: x.get("opened") or 0):
+        base = _norm_pair(p.get("pair", "")).split("/")[0].upper()
+        by_asset.setdefault(base, []).append(p)
+
+    for base, plist in by_asset.items():
+        ledger = sum(float(p.get("qty") or 0) for p in plist)
+        held = float(bal.get(base, 0) or 0)
+        if ledger <= 0 or held >= ledger * (1 - tol_pct / 100):
+            continue                  # exchange still holds (enough of) the asset
+        short = ledger - held         # quantity that left outside BlackHorse
+        for p in plist:
+            if short <= 0:
+                break
+            try:
+                pair = _norm_pair(p.get("pair"))
+                last = None
+                try:
+                    last = kraken_last_price(pair)
+                except Exception:
+                    last = None
+                price = float(last or p.get("mark") or p.get("entry") or 0)
+                take = min(short, float(p.get("qty") or 0))
+                rec = portfolio.reduce_position(p["id"], take, price,
+                                                reason="external-close (reconciled)")
+                try:
+                    import store
+                    r = rec.get("record") or {}
+                    if rec.get("remaining", 0) <= 1e-12:
+                        store.close_position(p["id"], price, r.get("net", 0.0),
+                                             fees=r.get("fees", 0.0),
+                                             reason="external-close (reconciled)")
+                except Exception:
+                    pass
+                out["positions"].append({"asset": base, "position": p["id"], "qty": take,
+                                         "price": price, "net": rec.get("net"),
+                                         "external_close": rec.get("remaining", 0) <= 1e-12})
+                short -= take
+            except Exception as e:
+                out["positions"].append({"asset": base, "position": p.get("id"), "error": str(e)})
+    out["ok"] = not (out["orders"] or out["positions"])
+    # a position closed outside BlackHorse may still have a resting SELL order
+    # attached to it: cancel that order and drop the local tracker so we never
+    # sell against a position the ledger no longer owns. Best-effort.
+    if out["positions"]:
+        try:
+            open_ids = {p["id"] for p in portfolio.open_positions()}
+            cur = _exit_load()
+            for x in cur:
+                if x.get("pos_id") not in open_ids:
+                    try:
+                        venues.cancel(x.get("txid"), x.get("pair"))
+                        out.setdefault("cancelled_exits", []).append(x.get("txid"))
+                    except Exception:
+                        pass
+            _exit_save([x for x in cur if x.get("pos_id") in open_ids])
+        except Exception:
+            pass
+    _write_reconcile(out)
+    return out
+
+
+def _write_reconcile(out: dict):
+    try:
+        RECONCILE.parent.mkdir(parents=True, exist_ok=True)
+        RECONCILE.write_text(json.dumps(out, indent=2))
+    except OSError:
+        pass
+
+
 def mark(pair: str, price: float) -> dict:
     import portfolio
     closed = portfolio.mark(pair, price)
@@ -702,8 +880,14 @@ if __name__ == "__main__":
     ap.add_argument("--pair", default="DOT/USD")
     ap.add_argument("--mark", nargs=2)
     ap.add_argument("--close", nargs=2)
+    ap.add_argument("--reconcile", action="store_true",
+                    help="settle local orders/positions against the exchange (read-only on the venue)")
+    ap.add_argument("--no-positions", action="store_true",
+                    help="with --reconcile: only settle orders, leave positions alone")
     args = ap.parse_args()
-    if args.mark:
+    if args.reconcile:
+        print(json.dumps(reconcile(settle_positions=not args.no_positions), indent=2))
+    elif args.mark:
         print(json.dumps(mark(args.mark[0], float(args.mark[1])), indent=2))
     elif args.close:
         print(json.dumps(close(args.close[0], float(args.close[1])), indent=2))

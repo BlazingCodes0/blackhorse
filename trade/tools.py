@@ -201,8 +201,9 @@ def _norm_pair(raw):
                      "Requires an explicit mode.",
       {"side": "buy|sell", "pair": "e.g. DOT/USD", "amount_usd": "number",
        "mode": "paper|live", "order_type": "limit|market (optional, default limit)",
-       "price": "number, for limit orders"})
-def place_order(side, pair, amount_usd, mode, order_type="limit", price=None):
+       "price": "number, for limit orders",
+       "time_in_force": "GTC|IOC|GTD|FOK (optional, default GTD)"})
+def place_order(side, pair, amount_usd, mode, order_type="limit", price=None, time_in_force="GTD"):
     import execute
     side = str(side).lower()
     mode = str(mode).lower()
@@ -210,10 +211,14 @@ def place_order(side, pair, amount_usd, mode, order_type="limit", price=None):
         return "need side (buy or sell)"
     if mode not in ("paper", "live"):
         return "need mode (paper or live)"
+    tif = str(time_in_force or "GTD").upper()
+    if tif not in ("GTC", "IOC", "GTD", "FOK"):
+        tif = "GTD"
     p = _norm_pair(pair)
     entry = float(price) if price else (_price(p) or 0)
     plan = {"action": side.upper(), "order_type": str(order_type).lower(),
-            "entry": entry or None, "size_quote": float(amount_usd), "manual": True}
+            "entry": entry or None, "size_quote": float(amount_usd), "manual": True,
+            "time_in_force": tif}
     if price:
         plan["price"] = float(price)
     res = execute.execute(plan, pair=p, mode=mode)

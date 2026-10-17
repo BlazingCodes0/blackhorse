@@ -673,6 +673,7 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
     return {"channel": channel, "interval": interval, "side": side, "entry": entry, "stop": stop, "target": target,
             "size_quote": size_quote, "risk_quote": risk_quote,
             "order_type": _entry_type, "expiry_s": int(cfg.get("entry_expiry_seconds", 600)),
+            "time_in_force": str(cfg.get("entry_time_in_force", "GTD")).upper(),
             "fee_reserve_pct": round(fee_reserve * 100, 3),
             "outlay_quote": round(size_quote * (1 + fee_reserve), 4),
             "fee_entry_pct": round(fee_entry_frac * 100, 3), "fee_exit_pct": round(fee_exit_frac * 100, 3), "rr": rr, "score": score,

@@ -169,6 +169,10 @@ SETTINGS = [
         ("entry_strength_max", "Entry buy range top (≤)", "float", "policy",
          "Entry lane buys when its strength is inside [0, this]. 0 = floor only, 1 = whole range."),
         ("entry_order_type", "Order type", "combo:limit,market", "policy", "limit = rests at the entry price (maker fee)."),
+        ("entry_time_in_force", "Time in force", "combo:GTC,IOC,GTD,FOK", "policy",
+         "How long the order lives (separate from order type). GTC = rest until cancelled. "
+         "IOC = fill now or cancel the rest. GTD = rest until the expiry below. "
+         "FOK = fill fully right now or kill (needs a limit price)."),
         ("entry_expiry_seconds", "Limit expires (s)", "int", "policy", "Unfilled limit orders are cancelled after this."),
         ("min_reward_risk", "Min R:R", "float", "policy", "Target distance vs invalidation distance."),
         ("risk_per_trade_pct", "Risk % of capital", "float", "policy", "Used for sizing (fees included)."),
@@ -889,7 +893,9 @@ class AgentsMixin:
                  "<b>" + ("ON — only PROVEN cells" if pol.get("require_proven_edge", False)
                           else "OFF — trades unproven setups") + "</b>"),
                 ("Buy range (entry lane)", f"[0 – {pol.get('entry_strength_max')}]" if pol.get("entry_strength_max") is not None else "—"),
-                ("Entry order", f"{pol.get('entry_order_type', 'limit')} (expires {pol.get('entry_expiry_seconds', '-')}s)"),
+                ("Entry order", f"{pol.get('entry_order_type', 'limit')} · "
+                                 f"TIF {pol.get('entry_time_in_force', 'GTD')} "
+                                 f"(expires {pol.get('entry_expiry_seconds', '-')}s)"),
                 ("Sell range (entry lane)", f"[{pol.get('exit_strength_min')} – 1]" if pol.get("exit_strength_min") is not None else "—"),
                 ("Star alignment",
                  "<b>" + ("ON — entry lane must be eligible" if pol.get("star_alignment", False)

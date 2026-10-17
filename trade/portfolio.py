@@ -211,6 +211,50 @@ def close_position(pos_id: str, price: float, reason: str = "manual", fee_pct: f
     return {"ok": True, "net": round(net, 8), "record": rec}
 
 
+def reduce_position(pos_id: str, sell_qty: float, price: float,
+                    reason: str = "external-close (reconciled)", fee_pct: float = None,
+                    fee: float = None) -> dict:
+    """Realise P&L for a slice of a position that left the exchange without a
+    BlackHorse order (manual sell / withdrawal / closed while we were down).
+    Shrinks the position; closes it entirely when the slice is (near) the whole.
+    Applies exchange truth to the local ledger — it never sends an order."""
+    d = _load()
+    pos = next((p for p in d["positions"] if p["id"] == pos_id), None)
+    if not pos:
+        return {"ok": False, "error": "position not found"}
+    qty_have = float(pos["qty"])
+    sell_qty = min(float(sell_qty), qty_have)
+    if sell_qty <= 0:
+        return {"ok": False, "error": "nothing to reduce"}
+    if sell_qty >= qty_have - 1e-12:
+        return close_position(pos_id, price, reason=reason, fee=fee)
+    mult = 1 if pos["side"] == "BUY" else -1
+    gross = (price - pos["entry"]) * sell_qty * mult
+    pct = fee_pct if fee_pct is not None else _fee_pct(pos.get("pair", "DOT/USD"))
+    fee_exit = fee if fee is not None else price * sell_qty * (pct / 100)
+    fee_entry_slice = float(pos.get("fee_entry") or 0) * (sell_qty / qty_have)
+    net = gross - fee_entry_slice - fee_exit
+    pos["qty"] = qty_have - sell_qty
+    pos["fee_entry"] = float(pos.get("fee_entry") or 0) - fee_entry_slice
+    d["realized_pnl"] += net
+    d["fees_paid"] += fee_exit
+    _save(d)
+    rec = {"type": "reduce", "position_id": pos_id, "pair": pos["pair"], "side": pos["side"],
+           "entry": pos["entry"], "exit": price, "qty": sell_qty, "reason": reason,
+           "gross": round(gross, 8), "fees": round(fee_entry_slice + fee_exit, 8),
+           "net": round(net, 8), "remaining_qty": pos["qty"]}
+    _log(rec)
+    try:
+        import store
+        con = store.connect()
+        con.execute("UPDATE positions SET qty=?, fee_entry=? WHERE id=?",
+                    (pos["qty"], pos["fee_entry"], pos_id))
+        con.commit()
+    except Exception:
+        pass
+    return {"ok": True, "net": round(net, 8), "record": rec, "remaining": pos["qty"]}
+
+
 def history(limit=20) -> list:
     if not LEDGER.exists():
         return []
