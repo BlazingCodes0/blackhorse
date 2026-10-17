@@ -19,11 +19,13 @@ DEFAULT_FEE_PCT = 0.80          # conservative taker fallback; real value from f
 
 
 def _fee_pct(pair: str = "DOT/USD", side: str = "taker") -> float:
-    """Real per-side fee (percent) from fees.py (snapshot/account tier); 0.80 fallback."""
+    """Real per-side fee (percent) from fees.py (snapshot/account tier); 0.80 fallback.
+    Clamped to a sane range: a corrupt fee snapshot must never inflate a booked fee."""
     try:
         import fees
         mk, tk = fees.rates(pair or "DOT/USD")
-        return (mk if str(side).lower() == "maker" else tk) * 100.0
+        pct = (mk if str(side).lower() == "maker" else tk) * 100.0
+        return pct if 0 < pct <= 5.0 else DEFAULT_FEE_PCT
     except Exception:
         return DEFAULT_FEE_PCT
 
