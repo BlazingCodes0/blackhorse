@@ -17,6 +17,8 @@ CLI:
   python3 trade/agents.py enable agent_1 | disable agent_1
   python3 trade/agents.py capital agent_1 75
   python3 trade/agents.py policy agent_1     # the effective decider policy
+  python3 trade/agents.py preview-delete agent_1   # orders it would cancel + positions it leaves
+  python3 trade/agents.py delete agent_1     # cancels its working orders, then removes it
 """
 import json, sys, time, argparse, secrets as _secrets
 from pathlib import Path
@@ -223,13 +225,118 @@ def create_agent(kind: str, profile: str = "15m", name: str = None, capital: flo
     return d["agents"][agent_id]
 
 
-def delete_agent(agent_id: str) -> dict:
+def _open_positions_for(agent_id: str) -> list:
+    """Locally-open positions owned by this agent (portfolio.json is the live truth)."""
+    try:
+        import portfolio
+        return [p for p in portfolio.open_positions() if p.get("agent") == agent_id]
+    except Exception:
+        return []
+
+
+def agent_working_orders(agent_id: str) -> dict:
+    """Every order this agent still has working, split into {"entries": [...],
+    "exits": [...]}. Entries are incoming buys (resting limit entries + working store
+    rows); exits are outgoing sells (resting stop/profit exits). Deduped by exchange
+    txid so an order tracked in more than one place is only cancelled once."""
+    import execute
+    out = {"entries": [], "exits": []}
+    seen = set()
+
+    def add(bucket, txid, pair, side, source, position=None):
+        if not txid or txid in seen:
+            return
+        seen.add(txid)
+        out[bucket].append({"txid": txid, "pair": pair, "side": side,
+                            "source": source, "position": position})
+
+    for p in execute._pend_load():                        # resting limit entries
+        if p.get("agent") == agent_id:
+            add("entries", p.get("txid"), p.get("pair"), "BUY", "pending")
+    try:
+        import store
+        for o in store.live_open_orders():               # working orders carrying an exchange id
+            if o.get("agent") != agent_id:
+                continue
+            side = str(o.get("side") or "").upper()
+            add("exits" if side == "SELL" else "entries",
+                o.get("exchange_order_id"), o.get("pair"), side, "store")
+    except Exception:
+        pass
+    for p in _open_positions_for(agent_id):              # exits armed on open positions
+        add("exits", p.get("exit_txid"), p.get("pair"), "SELL", "exit_txid", p.get("id"))
+    for x in execute._exit_load():                       # resting exits awaiting settlement
+        if x.get("agent") == agent_id:
+            add("exits", x.get("txid"), x.get("pair"), "SELL", "pending_exit", x.get("pos_id"))
+    return out
+
+
+def preview_delete(agent_id: str) -> dict:
+    """What deleting this agent WILL do — for the confirmation dialog: the working
+    orders that will be cancelled and the open positions that will NOT be closed
+    (they stay on the exchange; the user has to deal with them)."""
+    a = get_agent(agent_id)
+    w = agent_working_orders(agent_id)
+    pos = _open_positions_for(agent_id)
+    return {"id": agent_id, "name": a.get("name"), "kind": a.get("kind"),
+            "entries": w["entries"], "exits": w["exits"],
+            "order_count": len(w["entries"]) + len(w["exits"]),
+            "positions": [{"id": p.get("id"), "pair": p.get("pair"), "qty": p.get("qty"),
+                           "entry": p.get("entry"), "mode": p.get("mode")} for p in pos],
+            "position_count": len(pos)}
+
+
+def _forget_cancelled(w: dict):
+    """Drop local tracking for an order just cancelled on the venue, so nothing
+    re-counts its cash or tries to settle it again. Exchange-side it is already gone."""
+    try:
+        import execute
+        if w.get("source") == "pending":
+            execute._pend_save([p for p in execute._pend_load() if p.get("txid") != w["txid"]])
+        elif w.get("source") == "pending_exit":
+            execute._exit_save([x for x in execute._exit_load() if x.get("txid") != w["txid"]])
+        elif w.get("source") == "exit_txid":
+            import exits
+            exits._set_pos_field(w.get("position"), "exit_txid", None, remove=True)
+    except Exception:
+        pass
+    try:
+        if w.get("source") in ("store", "pending"):
+            import store
+            store.live_order_result(w["txid"], "CANCELED", 0.0, None, 0.0)
+    except Exception:
+        pass
+
+
+def delete_agent(agent_id: str, cancel_orders: bool = True) -> dict:
+    """Delete an agent. By default its working orders are cancelled on the venue
+    first (read/write only ever touches THIS machine's own orders — never a remote
+    machine). Open positions are LEFT OPEN: they still sit on the exchange, so the
+    user must deal with them; they are returned so the UI can say so plainly."""
+    a = get_agent(agent_id)                              # KeyError if unknown
+    working = agent_working_orders(agent_id)
+    positions = _open_positions_for(agent_id)
+    cancelled, failed = [], []
+    if cancel_orders:
+        import execute
+        for w in (working["entries"] + working["exits"]):
+            try:
+                r = execute.cancel(w["txid"], w.get("pair"))
+            except Exception as e:
+                r = {"ok": False, "reason": str(e)}
+            if r.get("ok"):
+                cancelled.append(w["txid"])
+                _forget_cancelled(w)
+            else:
+                failed.append({"txid": w["txid"], "pair": w.get("pair"),
+                               "side": w.get("side"), "reason": r.get("reason")})
     d = _load()
-    if agent_id not in d["agents"]:
-        raise KeyError(f"unknown agent {agent_id}")
-    del d["agents"][agent_id]
+    d["agents"].pop(agent_id, None)
     _save(d)
-    return {"deleted": agent_id}
+    return {"deleted": agent_id, "name": a.get("name"),
+            "cancelled": cancelled, "cancel_failed": failed,
+            "positions_left": [{"id": p.get("id"), "pair": p.get("pair"),
+                                "qty": p.get("qty"), "entry": p.get("entry")} for p in positions]}
 
 
 def set_enabled(agent_id: str, enabled: bool) -> dict:
@@ -372,6 +479,10 @@ if __name__ == "__main__":
     di = sub.add_parser("disable"); di.add_argument("id")
     ca = sub.add_parser("capital"); ca.add_argument("id"); ca.add_argument("amount", type=float)
     po = sub.add_parser("policy"); po.add_argument("id")
+    pv = sub.add_parser("preview-delete"); pv.add_argument("id")
+    dl = sub.add_parser("delete"); dl.add_argument("id")
+    dl.add_argument("--keep-orders", action="store_true",
+                    help="do not cancel the agent's working orders, just remove it")
     args = ap.parse_args()
     cmd = args.cmd or "list"
     if cmd == "intervals": print(json.dumps(interval_defaults(), indent=2))
@@ -381,3 +492,5 @@ if __name__ == "__main__":
     elif cmd == "disable": print(json.dumps(set_enabled(args.id, False), indent=2))
     elif cmd == "capital": print(json.dumps(set_capital(args.id, args.amount), indent=2))
     elif cmd == "policy": print(json.dumps(policy_for(args.id), indent=2))
+    elif cmd == "preview-delete": print(json.dumps(preview_delete(args.id), indent=2))
+    elif cmd == "delete": print(json.dumps(delete_agent(args.id, cancel_orders=not args.keep_orders), indent=2))

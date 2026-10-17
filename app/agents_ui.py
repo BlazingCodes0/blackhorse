@@ -686,8 +686,14 @@ class AgentsMixin:
         b_on.clicked.connect(lambda: self.agent_toggle(True))
         b_off = QPushButton("Disable")
         b_off.clicked.connect(lambda: self.agent_toggle(False))
+        b_del = QPushButton("Delete…")
+        b_del.setStyleSheet(f"color:{RED}")
+        b_del.setToolTip("Remove this agent. Its working orders are cancelled first; open "
+                         "positions stay on the exchange and must be dealt with separately.")
+        b_del.clicked.connect(self.delete_agent)
         br.addWidget(b_on)
         br.addWidget(b_off)
+        br.addWidget(b_del)
         lv.addLayout(br)
         split.addWidget(left)
 
