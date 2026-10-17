@@ -907,28 +907,29 @@ class AgentsMixin:
                 self.agent_list.setCurrentRow(sel)
                 self.agent_list.blockSignals(False)
             self._show_profile()
+            self._refresh_audit()
             self._render_agent()
-            try:
-                aud = agents.audited()
-                self._agent_audit = {r["id"]: r for r in aud.get("agents", [])}
-                stuck = [r["name"] for r in aud.get("agents", []) if r.get("enabled") and r.get("can_trade") is False]
-                head = (f"capital ${aud['capital_total']} · deployed ${aud['deployed']} · free cash ${aud['available']} · "
-                        f"agents can still spend ${aud['agents_claim']} · equity ${aud['equity']}")
-                if aud.get("over_allocated"):
-                    self.agent_status.setText(f"⚠ OVER-ALLOCATED by ${aud['overshoot']} — {head}")
-                    self.agent_status.setStyleSheet("color:#ef4444")
-                elif stuck:
-                    self.agent_status.setText(f"✓ allocation adds up — {head}<br>"
-                                              f"⚠ can't place an order (own size cap below the exchange minimum): {', '.join(stuck)}")
-                    self.agent_status.setTextFormat(Qt.TextFormat.RichText)
-                    self.agent_status.setStyleSheet("color:#d97706")
-                else:
-                    self.agent_status.setText(f"✓ allocation adds up — {head}")
-                    self.agent_status.setStyleSheet("color:#16a34a")
-            except Exception:
-                pass
         except Exception as e:
             set_text_keep_scroll(self.house_view, f"agents error: {e}")
+
+    def _refresh_audit(self):
+        agents, _ = self._agents_mod()
+        aud = agents.audited()
+        self._agent_audit = {r["id"]: r for r in aud.get("agents", [])}
+        stuck = [r["name"] for r in aud.get("agents", []) if r.get("enabled") and r.get("can_trade") is False]
+        head = (f"capital ${aud['capital_total']} · deployed ${aud['deployed']} · free cash ${aud['available']} · "
+                f"agents can still spend ${aud['agents_claim']} · equity ${aud['equity']}")
+        if aud.get("over_allocated"):
+            self.agent_status.setText(f"⚠ OVER-ALLOCATED by ${aud['overshoot']} — {head}")
+            self.agent_status.setStyleSheet("color:#ef4444")
+        elif stuck:
+            self.agent_status.setText(f"✓ allocation adds up — {head}<br>"
+                                      f"⚠ can't place an order (own size cap below the exchange minimum): {', '.join(stuck)}")
+            self.agent_status.setTextFormat(Qt.TextFormat.RichText)
+            self.agent_status.setStyleSheet("color:#d97706")
+        else:
+            self.agent_status.setText(f"✓ allocation adds up — {head}")
+            self.agent_status.setStyleSheet("color:#16a34a")
 
     def _selected_agent(self):
         i = self.agent_list.currentRow() if hasattr(self, "agent_list") else -1
@@ -1363,7 +1364,13 @@ class AgentsMixin:
             if not self.pages[3].isVisible():
                 return
             cur = self.agent_tabs.currentWidget()
-            if cur is self.ag_orders_scroll:
+            if cur is self.ag_overview:
+                self._refresh_audit()
+                a = self._selected_agent()
+                if a:
+                    pol = self._agents_mod()[0].policy_for(a["id"])
+                    self._render_overview(a, pol)
+            elif cur is self.ag_orders_scroll:
                 # hold the tab's own scroll too: the tables/browsers are rebuilt here
                 with keep_scroll(self.ag_orders_scroll):
                     self._refresh_orders_tab()
