@@ -380,6 +380,43 @@ def _expiry_for(tif: str, plan: dict):
     return None
 
 
+def _entry_client_id(agent, pair) -> str:
+    """Deterministic 32-hex client id for an agent's entry on a pair — the entry-order
+    mirror of _exit_client_id(). One entry rests per agent/pair at a time, so reuse is
+    safe: once the order fills or is cancelled it is no longer OPEN and the venue frees
+    the id for the next cycle."""
+    import hashlib
+    return hashlib.sha256(f"bh-entry:{agent}:{pair}".encode()).hexdigest()[:32]
+
+
+def _adopt_entry(plan: dict, pair: str, o: dict, reserve, snapshot, expire, tif) -> dict:
+    """Record a resting BUY entry that is already working on the venue (we were shut
+    down between sending it and recording it) instead of sending a second buy."""
+    import time
+    price = float(o.get("price") or plan.get("price") or plan.get("entry") or 0)
+    volume = float(o.get("vol") or 0)
+    txid = o["id"]
+    outlay = round(volume * price * (1 + (reserve or 0)), 8) if price else 0
+    try:
+        import store
+        store.live_order(txid, plan.get("agent", "house"), pair, "buy", "limit", price,
+                         volume, outlay=outlay or None,
+                         expires=(time.time() + expire) if expire else None,
+                         plan=plan, snapshot=snapshot, time_in_force=tif)
+    except Exception:
+        pass
+    pend = _pend_load()
+    if not any(x.get("txid") == txid for x in pend):
+        pend.append({"txid": txid, "agent": plan.get("agent", "house"), "pair": pair,
+                     "price": price, "volume": volume, "stop": plan.get("stop"),
+                     "target": plan.get("target"), "outlay": outlay, "placed": time.time(),
+                     "expires": (time.time() + expire) if expire else None, "tif": tif,
+                     "snapshot": snapshot})
+        _pend_save(pend)
+    return {"ok": True, "mode": "LIVE", "txid": txid, "pending": True, "price": price,
+            "volume": volume, "time_in_force": tif, "expires_in_s": expire, "adopted": True}
+
+
 def _live_order(plan: dict, pair: str) -> dict:
     """Place a REAL Kraken order. BUY: sized so notional + BASE-tier fee <= cash
     available (never overshoots); default a LIMIT at the plan's entry with an expiry,
@@ -455,15 +492,38 @@ def _live_order(plan: dict, pair: str) -> dict:
             snapshot = exits.take_snapshot(plan.get("agent"), plan.get("channel"), pair=pair)
         except Exception:
             snapshot = None
+    # Deterministic client id so a resting buy we already sent is recognised after a
+    # restart. Only resting entries (limit + GTC/GTD) get one — market/IOC/FOK orders
+    # never rest, so an id would only risk spurious duplicate rejections between cycles.
+    rest = side == "buy" and otype == "limit" and tif in ("GTC", "GTD")
+    cid = _entry_client_id(plan.get("agent", "house"), pair) if rest else None
     if os.environ.get("BH_VALIDATE_ONLY"):
         return {"ok": True, "validated": True,
                 "body": {"pair": pair, "type": side, "ordertype": otype, "volume": str(volume),
                          "timeinforce": tif,
+                         **({"cl_ord_id": cid} if cid else {}),
                          **({"price": str(price), "expiretm": f"+{expire}"} if otype == "limit" and price is not None and expire else {}),
                          **({"price": str(price)} if otype == "limit" and price is not None and not expire else {})}}
-    res = venues.place_order(pair, side, otype, volume, price, expire, tif)
+    if cid:
+        # Exchange-as-truth: if this entry is already resting, adopt it, don't resend.
+        try:
+            working = venues.open_orders(pair)
+        except Exception:
+            working = None
+        prior = next((o for o in (working or []) if o.get("cid") == cid), None)
+        if prior:
+            return _adopt_entry(plan, pair, prior, reserve, snapshot, expire, tif)
+    res = venues.place_order(pair, side, otype, volume, price, expire, tif, client_id=cid)
     invalidate_balance()
     if not res.get("ok"):
+        if cid:
+            try:
+                listing = venues.open_orders(pair) or []
+            except Exception:
+                listing = []
+            prior = next((o for o in listing if o.get("cid") == cid), None)
+            if prior:
+                return _adopt_entry(plan, pair, prior, reserve, snapshot, expire, tif)
         return {"ok": False, "blocked": True, "reason": f"order rejected: {res.get('error')}"}
     txid = res.get("order_id")
     try:
