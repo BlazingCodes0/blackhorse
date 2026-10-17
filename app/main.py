@@ -16,7 +16,7 @@ del _sub, _p
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit,
                                QPushButton, QLabel, QTextEdit, QListWidget, QListWidgetItem, QFrame,
                                QSystemTrayIcon, QMenu, QDialog, QFormLayout, QComboBox, QDialogButtonBox,
-                               QSplitter)
+                               QSplitter, QMessageBox)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QAction, QIcon
 from agents_ui import AgentsMixin
@@ -1218,6 +1218,64 @@ class BlackHorse(AgentsMixin, QMainWindow):
             self.refresh_agents()
         except Exception as e:
             self.house_view.setPlainText(f"toggle error: {e}")
+
+    def delete_agent(self):
+        """Delete the selected agent — with verification. Shows exactly what will
+        happen: the working orders that get cancelled and the open positions that
+        stay on the exchange (the user has to deal with those)."""
+        a = self._selected_agent()
+        if not a:
+            return
+        try:
+            agents, _ = self._agents_mod()
+            prev = agents.preview_delete(a["id"])
+        except Exception as e:
+            self.agent_status.setText(f"delete error: {e}")
+            return
+        orders = prev["entries"] + prev["exits"]
+        pos = prev["positions"]
+        lines = [f"Remove agent <b>{prev['name']}</b> ({prev['id']}) from the house?", ""]
+        if orders:
+            lines.append(f"<b>{len(orders)} working order(s) will be CANCELLED on the exchange:</b>")
+            lines += [f"&nbsp;&nbsp;• {o['side']} {o['pair']} — {o['txid']}" for o in orders]
+        else:
+            lines.append("No working orders to cancel.")
+        lines.append("")
+        if pos:
+            lines.append(f"<b style='color:#dc2626'>⚠ {len(pos)} open position(s) will NOT be closed.</b>")
+            lines.append("They stay open on the exchange — <b>you must deal with them yourself</b> "
+                         "(sell/close them):")
+            lines += [f"&nbsp;&nbsp;• {p['pair']} — qty {p['qty']} @ entry {p['entry']} "
+                      f"({p.get('mode') or '-'})" for p in pos]
+            lines.append("")
+        lines.append("This cannot be undone.")
+        box = QMessageBox(self)
+        box.setWindowTitle("Delete agent")
+        box.setIcon(QMessageBox.Icon.Warning if pos else QMessageBox.Icon.Question)
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        box.button(QMessageBox.StandardButton.Yes).setText("Delete agent")
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            res = agents.delete_agent(a["id"], cancel_orders=True)
+        except Exception as e:
+            self.agent_status.setText(f"delete error: {e}")
+            return
+        self.refresh_agents()
+        msg = f"Deleted {a['name']} ({a['id']})."
+        if res.get("cancelled"):
+            msg += f" Cancelled {len(res['cancelled'])} order(s)."
+        if res.get("cancel_failed"):
+            msg += (f" ⚠ {len(res['cancel_failed'])} order(s) could NOT be cancelled — "
+                    f"check the venue (reconcile will settle them).")
+        if res.get("positions_left"):
+            msg += f" ⚠ {len(res['positions_left'])} position(s) left OPEN — close them yourself."
+        self.agent_status.setText(msg)
+        self.agent_status.setStyleSheet(
+            "color:#d97706" if (res.get("cancel_failed") or res.get("positions_left")) else "color:#16a34a")
 
     def house_decide(self):
         try:
