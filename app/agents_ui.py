@@ -227,6 +227,10 @@ SETTINGS = [
         ("ma_cross_min_gap_pct", "MA coil exemption (%)", "float", "policy",
          "Gaps smaller than this count as neutral (a coil, not a bias) and never block. "
          "Default 0.15."),
+        ("spread_ma_fast", "Spread fast period (MA10 context)", "int", "policy",
+         "Fast MA length for the spread analysis context. Default 10 (separate from MA cross)."),
+        ("spread_ma_slow", "Spread slow period (MA30 context)", "int", "policy",
+         "Slow MA length for the spread analysis context. Default 30 (separate from MA cross)."),
     ]),
 ]
 
