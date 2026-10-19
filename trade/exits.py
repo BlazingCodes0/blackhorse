@@ -276,6 +276,22 @@ def _exit_now(portfolio, execute, pos, pair, mode, reason, stop, need, ask, st, 
     pid = pos["id"]
     if mode == "LIVE":
         if pos.get("exit_txid"):                         # a resting stop was armed -> drop it
+            # The armed order may have FILLED while price sat at our level — venue status
+            # "closed" = sold. Settle that fill right now (sync_exits books it at the real
+            # price); resting another sell on top of an executed one is the double-sell.
+            try:
+                o = execute.venues.orders([(pos["exit_txid"], pair)]).get(pos["exit_txid"])
+            except Exception:
+                o = None
+            if o and str(o.get("status")) == "closed":
+                try:
+                    execute.sync_exits()
+                except Exception:
+                    pass
+                st["result"] = {"ok": True, "reason": "armed exit already filled - settled, no re-sell"}
+                events.append({"position": pid, "reason": reason, "ok": True,
+                               "result": "filled-settled-not-replaced"})
+                return
             if not execute.cancel_verified(pos["exit_txid"], pair):
                 # Could not confirm the resting stop is gone — do NOT rest a second sell.
                 st["result"] = {"ok": False, "reason": "resting exit not confirmed cancelled"}
@@ -319,12 +335,23 @@ def _manage_stop_limit(portfolio, execute, pos, pair, stop, st):
         st["stop"]["action"] = "armed" if res.get("ok") else "arm-failed"
         st["stop"]["arm_result"] = {k: res.get(k) for k in ("ok", "reason", "txid", "price", "maker")}
     elif armed and not near:                             # price recovered -> withdraw
+        # Confirm the stop is gone (or already FILLED) before releasing the marker —
+        # same double-sell seam as cancel_verified's "closed" bug.
         try:
-            execute.cancel(armed, pair)
+            o = execute.venues.orders([(armed, pair)]).get(armed)
         except Exception:
-            pass
-        _set_pos_field(pid, "exit_txid", None, remove=True)
-        st["stop"]["action"] = "withdrawn"
+            o = None
+        if o and str(o.get("status")) == "closed":
+            try:
+                execute.sync_exits()
+            except Exception:
+                pass
+            st["stop"]["action"] = "filled-settled"
+        elif execute.cancel_verified(armed, pair):
+            _set_pos_field(pid, "exit_txid", None, remove=True)
+            st["stop"]["action"] = "withdrawn"
+        else:
+            st["stop"]["action"] = "withdraw-unconfirmed"  # marker kept; retried next pass
     else:
         st["stop"]["action"] = "held"
 

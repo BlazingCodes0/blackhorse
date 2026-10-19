@@ -599,9 +599,12 @@ def _live_order(plan: dict, pair: str) -> dict:
 def cancel_verified(txid: str, pair: str = None, tries: int = 3) -> bool:
     """Cancel a resting order and CONFIRM it is gone on the venue before anyone rests a
     replacement on the same pair. Exchange-as-truth: a cancel that didn't take (or that
-    we can't read back) returns False, so the caller must NOT place another sell. This
-    is the seam that let one position end up with two working sells when a cancel
-    silently failed or the process died between placing the sell and recording it."""
+    we can't read back) returns False, so the caller must NOT place another sell.
+    Venue status "closed" means FULLY FILLED — sold, NOT cancelled — so it never counts
+    as success here: treating it as gone let the caller pop the position's exit marker
+    and rest a second sell on top of one that had just executed (the 2026-10-19
+    double-sell, orders 97/100 and 98/101). A filled order therefore keeps returning
+    False and its caller leaves the marker alone, so sync_exits books the real fill."""
     import time
     if not txid:
         return True
@@ -614,10 +617,26 @@ def cancel_verified(txid: str, pair: str = None, tries: int = 3) -> bool:
             o = venues.orders([(txid, pair)]).get(txid)
         except Exception:
             o = None
-        if o and str(o.get("status")) in ("canceled", "closed", "expired"):
+        if o and str(o.get("status")) in ("canceled", "expired"):
             return True
         time.sleep(0.5)
     return False
+
+
+def _release_orphan_exit(txid: str, pair: str = None) -> bool:
+    """Forget a pending exit whose position is gone ONLY when the venue says the order
+    is gone too. Still working -> cancel and confirm; unconfirmed -> keep tracking so
+    the next pass retries. Dropping it unverified is how a resting sell outlives its
+    position and sells coins the ledger no longer owns."""
+    try:
+        o = venues.orders([(txid, pair)]).get(txid)
+    except Exception:
+        o = None
+    if o and str(o.get("status")) in ("open", "pending", "partial"):
+        return cancel_verified(txid, pair)
+    if o:
+        return True              # canceled / expired / closed -> nothing still working
+    return False                 # could not read -> do NOT forget; retry next pass
 
 
 def _exit_client_id(pos_id: str) -> str:
@@ -755,7 +774,14 @@ def sync_exits() -> list:
     for e in ex:
         pos = open_pos.get(e["pos_id"])
         if not pos:
-            drop.add(e["txid"]); continue
+            # Position vanished (write-off / closed outside BlackHorse). Never just
+            # drop the tracker — a resting sell would outlive its position.
+            if _release_orphan_exit(e["txid"], e.get("pair")):
+                drop.add(e["txid"])
+            else:
+                events.append({"txid": e["txid"], "pos": e["pos_id"],
+                               "result": "orphan-cancel-not-confirmed"})
+            continue
         o = res.get(e["txid"])
         if not o:
             continue
@@ -971,15 +997,15 @@ def reconcile(settle_orders: bool = True, settle_positions: bool = True,
     if out["positions"]:
         try:
             open_ids = {p["id"] for p in portfolio.open_positions()}
-            cur = _exit_load()
+            kept, cur = [], _exit_load()
             for x in cur:
-                if x.get("pos_id") not in open_ids:
-                    try:
-                        venues.cancel(x.get("txid"), x.get("pair"))
-                        out.setdefault("cancelled_exits", []).append(x.get("txid"))
-                    except Exception:
-                        pass
-            _exit_save([x for x in cur if x.get("pos_id") in open_ids])
+                if x.get("pos_id") in open_ids:
+                    kept.append(x)
+                elif _release_orphan_exit(x.get("txid"), x.get("pair")):
+                    out.setdefault("cancelled_exits", []).append(x.get("txid"))
+                else:
+                    kept.append(x)          # still working & unconfirmed -> retry
+            _exit_save(kept)
         except Exception:
             pass
     _write_reconcile(out)
