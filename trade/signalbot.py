@@ -274,7 +274,7 @@ def normalize(raw: dict, meta: dict) -> dict:
                 "spreadCount": (m.get("maSpreadRun") or {}).get("count"),
                 "maSpreadRun": m.get("maSpreadRun"),
                 "maSpreadsAnalysis": m.get("maSpreadsAnalysis"),
-                "spreadVerdict": _spread_verdict(m) if str(s.get("interval")) == "15m" else None,
+                "spreadVerdict": _spread_verdict(m),
                 "stopLoss": m.get("stopLoss"), "takeProfit": m.get("takeProfit"),
             },
             "RSI": s.get("RSI"),
@@ -284,7 +284,7 @@ def normalize(raw: dict, meta: dict) -> dict:
             #  once the normalized channel dict exists)
             # REAL MA20/MA50 cross data straight from SignalBot
             "maCross": {**_ma_cross((raw.get("signals") or {}).get("maCrossTripple", {}).get(ch)),
-                        "verdict": _ma_verdict(_ma_cross((raw.get("signals") or {}).get("maCrossTripple", {}).get(ch))) if str(s.get("interval")) == "15m" else None},
+                        "verdict": _ma_verdict(_ma_cross((raw.get("signals") or {}).get("maCrossTripple", {}).get(ch)))},
             # advisor lanes — NOTE which side is missing (null/0/empty = no flow)
             "advisor": {
                 "buy": buy, "sell": sell,

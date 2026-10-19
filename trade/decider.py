@@ -401,9 +401,23 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
         star_sell = bool(entry_ch.get("exitEligible"))
         reasons.append(f"star alignment ON \u2014 entry {entry_iv} must be eligible: "
                        f"BUY entryEligible={star_buy} \u00b7 SELL exitEligible={star_sell}")
-    # SPREAD TRUTH (owner rule): trust ONLY the 15m spread read. Other timeframes
-    # are noise or too slow. Find the 15m lane regardless of which channel we trade.
-    shared15 = _shared_15m(ch, cfg.get("spread_trusted_interval", "15m"))
+    # SPREAD TRUTH (owner rule, confirmed 2026-10-19): the ENTRY (driving) lane is
+    # the ONLY source for the spread verdict and the MA cross — rungs and HTF never
+    # feed these gates. No interval selector: smallest listed interval = trusted.
+    shared15 = _shared_15m(ch, entry_iv)
+    try:
+        _mf = int(cfg.get("ma_cross_fast", 20) or 20)
+        _ms = int(cfg.get("ma_cross_slow", 50) or 50)
+    except (TypeError, ValueError):
+        _mf, _ms = 20, 50
+    if shared15 and (_mf, _ms) != (20, 50):
+        # SignalBot emits 20/50 — any other periods are computed from the entry
+        # lane's own candles (only paid for when the user changes the periods).
+        got = _local_mas(pair or signal.get("pair"), entry_iv, _mf, _ms)
+        if got and got[1]:
+            shared15 = dict(shared15, ma20=got[0], ma50=got[1],
+                            gap_pct=round((got[0] - got[1]) / got[1] * 100, 3),
+                            bias=("bullish" if got[0] > got[1] else "bearish"))
     cfg_buy = dict(cfg, require_proven_edge=False) if buy_override else cfg
     adv = entry_ch.get("advisor") or {}
     buy, sell = _num(adv.get("buy")), _num(adv.get("sell"))
@@ -505,17 +519,17 @@ def decide(signal=None, verdict=None, treasury=None, cfg=None, holding=0.0, pair
 
 
 def _shared_15m(channels: dict, trusted: str = "15m") -> dict:
-    """The trusted interval is the SOURCE OF TRUTH for the shared signals: the MA
-    spread AND the MA20/MA50 cross (owner rule). Other intervals keep their own
-    range/trend/structure, but spread + MA-cross are read from the trusted interval
-    only (config spread_trusted_interval, default 15m). The lane may be labeled
-    wave15 (dayTrade merge) or be ANY channel carrying that interval."""
+    """The trusted read for the shared signals: spread verdict AND the fast/slow MA
+    cross. The CALLER decides which lane is trusted; since 2026-10-19 that is ALWAYS
+    the agent's ENTRY (driving) lane (smallest listed interval) — rungs/HTF never
+    feed these gates. A lane is found by its own 'interval' field, never by name."""
     if not channels:
         return {}
     for name, c in channels.items():
         if str(c.get("interval")) == str(trusted):
             mr = c.get("marketResult") or {}
             mx = c.get("maCross") or {}
+            sv = mr.get("spreadVerdict")
             return {"label": name, "interval": str(trusted),
                     # spread
                     "change": mr.get("spreadChange"),
@@ -523,11 +537,39 @@ def _shared_15m(channels: dict, trusted: str = "15m") -> dict:
                     "was": mr.get("intialSpread"),
                     "direction": mr.get("spreadDirection"),
                     "count": mr.get("spreadCount"),
+                    "verdict": (sv.get("verdict") if isinstance(sv, dict) else sv),
+                    "verdict_detail": sv if isinstance(sv, dict) else None,
                     # MA cross
                     "ma20": mx.get("ma20"), "ma50": mx.get("ma50"),
                     "gap_pct": mx.get("gap_pct"), "bias": mx.get("bias"),
                     "cross": mx.get("cross"), "trend": mr.get("trendState")}
     return {}
+
+
+_MA_CACHE = {}
+
+
+def _local_mas(pair, iv, fast, slow, ttl=120):
+    """(fast_sma, slow_sma) over the entry interval's closes, from the venue OHLC.
+    Only paid for when the MA gate is ON with periods that differ from the 20/50
+    SignalBot already emits — zero cost when the gate is off."""
+    import time as _t
+    key = (pair, str(iv), int(fast), int(slow))
+    hit = _MA_CACHE.get(key)
+    if hit and _t.time() - hit[0] < ttl:
+        return hit[1]
+    try:
+        import venues
+        rows = venues.ohlc(pair, iv)
+        closes = [float(r[4]) for r in rows if isinstance(r, (list, tuple)) and len(r) > 4]
+        if len(closes) < int(slow):
+            return None
+        out = (round(sum(closes[-int(fast):]) / int(fast), 8),
+               round(sum(closes[-int(slow):]) / int(slow), 8))
+        _MA_CACHE[key] = (_t.time(), out)
+        return out
+    except Exception:
+        return None
 
 
 def _build(channel, c, side, entry, strength, direction, available, cfg, reasons, edge=None, pair=None, shared15=None):
@@ -551,32 +593,30 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
     trend = (mr.get("trendState") or c.get("trendState") or "").lower()
     if shared15 is None:
         shared15 = _shared_15m({c.get("interval") or "15m": c},
-                               cfg.get("spread_trusted_interval", "15m"))  # fall back to this lane
+                               c.get("interval") or "15m")  # entry lane is the read
     change = (shared15 or {}).get("change")
-    eps = float(cfg.get("spread_flat_epsilon", 0.02))   # "flat" band
-    spread_gate = cfg.get("require_spread_agreement", True)
-    if not spread_gate:
-        pass                                  # owner: 15m spread no longer blocks entries
-    elif change is not None:
-        change = float(change)
-        if side == "BUY" and change < -eps:
-            return None                       # 15m spread genuinely against a long
-        if side == "SELL" and change > eps:
-            return None                       # 15m spread genuinely against the exit
-    elif (shared15 or {}).get("direction"):
-        d = str(shared15["direction"]).lower()
-        if side == "BUY" and d == "weakening":
+    # --- SPREAD gate (entry-lane verdict, opt-in): SignalBot already separates
+    # genuine drift from chop — block ONLY on genuine adverse drift. Chop, noise
+    # and weak drift never block. OFF = no filtering at all (unchanged behavior).
+    if cfg.get("require_spread_agreement", False):
+        verdict = str((shared15 or {}).get("verdict") or "").lower()
+        if side == "BUY" and verdict.startswith("weakening"):
             return None
-        if side == "SELL" and d == "improving":
+        if side == "SELL" and verdict.startswith("improving"):
             return None
-    # MA20/MA50 cross gate (also 15m-trusted). Refuse BUY when 15m cross is bearish
-    # and SELL when bullish — but only when a real cross value exists.
-    ma_cross = (shared15 or {}).get("cross")
+    # --- MA cross gate (entry-lane, opt-in): fast vs slow with a coil exemption —
+    # a gap under ma_cross_min_gap_pct is a coil, not a bias, and never blocks.
     ma_bias = (shared15 or {}).get("bias")
     if cfg.get("require_ma_cross_agreement", False) and ma_bias:
-        if side == "BUY" and ma_bias == "bearish":
+        try:
+            _min_gap = float(cfg.get("ma_cross_min_gap_pct", 0.15))
+        except (TypeError, ValueError):
+            _min_gap = 0.15
+        gap = (shared15 or {}).get("gap_pct")
+        _real_gap = isinstance(gap, (int, float)) and abs(float(gap)) >= _min_gap
+        if _real_gap and side == "BUY" and ma_bias == "bearish":
             return None
-        if side == "SELL" and ma_bias == "bullish":
+        if _real_gap and side == "SELL" and ma_bias == "bullish":
             return None
     if cfg.get("require_trend_agreement", False):
         if side == "BUY" and trend == "falling":
@@ -661,14 +701,17 @@ def _build(channel, c, side, entry, strength, direction, available, cfg, reasons
         f"target clears round-trip fees ({round(gross_move*100,2)}% > {round(fee_frac*100,2)}%)",
         f"expected net if target hits: {expected_net_pct}% after fees+slippage",
         f"stop distance {round(stop_pct,2)}% within cap {cfg['stop_max_pct']}%",
-        (f"15m spread (trusted read): change {round(change,4)} over "
-         f"{(shared15 or {}).get('count')} bars · latest {(shared15 or {}).get('latest')} "
-         f"(was {(shared15 or {}).get('was')})" if change is not None else
-         "15m spread: no numeric read available"),
-        (f"15m MA20/MA50 (trusted): {round((shared15 or {}).get('ma20') or 0,6)} vs "
+        (f"{(shared15 or {}).get('interval', '?')} spread (entry lane): "
+         f"verdict {(shared15 or {}).get('verdict') or 'no read'}"
+         + (f" · change {round(change,4)} over {(shared15 or {}).get('count')} bars · "
+            f"latest {(shared15 or {}).get('latest')} (was {(shared15 or {}).get('was')})"
+            if change is not None else "")),
+        (f"{(shared15 or {}).get('interval', '?')} MA{cfg.get('ma_cross_fast', 20)}/"
+         f"MA{cfg.get('ma_cross_slow', 50)} (entry lane): "
+         f"{round((shared15 or {}).get('ma20') or 0,6)} vs "
          f"{round((shared15 or {}).get('ma50') or 0,6)} gap {(shared15 or {}).get('gap_pct')}% "
-         f"{ma_bias or '?'} cross={ma_cross}" if (shared15 or {}).get('ma20') else
-         "15m MA cross: no read available"),
+         f"{ma_bias or '?'}" if (shared15 or {}).get('ma20') else
+         "MA cross (entry lane): no read available"),
     ]
     return {"channel": channel, "interval": interval, "side": side, "entry": entry, "stop": stop, "target": target,
             "size_quote": size_quote, "risk_quote": risk_quote,

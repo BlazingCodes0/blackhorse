@@ -208,6 +208,26 @@ SETTINGS = [
         ("watch_pct", "Watch band % (of stop)", "float", "policy",
          "Arm the resting limit when price comes within this % of the stop level. Default 0.5."),
     ]),
+    ("Advanced — spread & MA cross (entry-lane driven)", [
+        ("require_spread_agreement", "Spread verdict gate", "bool", "policy",
+         "OFF (default) = no spread filtering — exactly the old behavior. ON = block BUY only "
+         "when the ENTRY lane's own spread verdict is genuinely weakening, and SELL only when "
+         "genuinely improving. Chop / noise / weak drift never block. Read from the driving "
+         "(smallest listed) interval — rungs never feed it."),
+        ("require_ma_cross_agreement", "MA cross gate", "bool", "policy",
+         "OFF (default) = no MA filtering. ON = block BUY while the ENTRY lane's fast MA sits "
+         "below the slow (bearish) and SELL while above (bullish) — gaps under the coil "
+         "exemption never block. Read from the driving lane only."),
+        ("ma_cross_fast", "MA fast period", "int", "policy",
+         "Fast MA length on the entry lane. Default 20 (= SignalBot's ma20, free). Any other "
+         "value is computed locally from the entry interval's own candles."),
+        ("ma_cross_slow", "MA slow period", "int", "policy",
+         "Slow MA length on the entry lane. Default 50 (= SignalBot's ma50). Any other value "
+         "is computed locally from the entry interval's own candles."),
+        ("ma_cross_min_gap_pct", "MA coil exemption (%)", "float", "policy",
+         "Gaps smaller than this count as neutral (a coil, not a bias) and never block. "
+         "Default 0.15."),
+    ]),
 ]
 
 
