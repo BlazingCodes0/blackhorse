@@ -1,0 +1,25 @@
+{
+  "title": "Support BlackHorse",
+  "app": "BlackHorse",
+  "brand": "CryptoBoqor",
+  "site": "https://cryptoboqor.com",
+  "note": "BlackHorse is free and runs fully local. If it saves you time or money, supporting development keeps it alive.",
+  "links": [
+    {"label": "GitHub Sponsors", "url": ""},
+    {"label": "Ko-fi", "url": ""},
+    {"label": "Buy Me a Coffee", "url": ""},
+    {"label": "Patreon", "url": ""},
+    {"label": "PayPal", "url": ""},
+    {"label": "Liberapay", "url": ""},
+    {"label": "Open Collective", "url": ""},
+    {"label": "Website", "url": ""}
+  ],
+  "crypto": [
+    {"label": "DOT (Polkadot)", "coin": "DOT", "address": "", "network": "Polkadot"},
+    {"label": "KSM (Kusama)", "coin": "KSM", "address": "", "network": "Kusama"},
+    {"label": "BTC (Bitcoin)", "coin": "BTC", "address": "", "network": "Bitcoin"},
+    {"label": "ETH (Ethereum)", "coin": "ETH", "address": "", "network": "Ethereum"},
+    {"label": "USDC (Ethereum)", "coin": "USDC", "address": "", "network": "Ethereum"}
+  ],
+  "_help": "Fill any url/address to enable that row. Leave empty to hide it. The dashboard Support button renders whatever is non-empty."
+}
