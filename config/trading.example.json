@@ -1,0 +1,11 @@
+{
+  "comment": "Copy to config/trading.json and edit. YOUR copy stays local (gitignored) — never commit live settings.",
+  "autonomous": false,
+  "mode": "PAPER",
+  "watchlist": [
+    "DOT/USD"
+  ],
+  "interval_seconds": 300,
+  "exchange_watch_seconds": 21600,
+  "hold_log_gap_s": 0
+}

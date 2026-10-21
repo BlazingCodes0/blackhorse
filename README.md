@@ -346,8 +346,11 @@ file may still sit at the repo root; it is not wired to anything.
 
 The secret vault is **never** committed. `config/exchange_keys.json` and
 `config/.master_key` are gitignored; the optional vault encrypts secrets at rest.
-Keep it that way. `config/treasury.json` (money state) and `config/agents.json`
-(runtime policy) are ordinary config and are usually left out of commits too.
+Keep it that way. `config/treasury.json` (money state), `config/agents.json`
+(the house roster) and `config/trading.json` (live switches + watchlist) are
+**gitignored too** — they are your private house state, not project files.
+Fresh clones get sanitized templates: `config/agents.example.json`,
+`config/trading.example.json`.
 
 ---
 

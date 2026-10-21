@@ -1,0 +1,5 @@
+{
+  "comment": "Copy to config/agents.json and edit. YOUR copy stays local (gitignored) — agents are the house roster.",
+  "agents": {},
+  "next_id": 1
+}

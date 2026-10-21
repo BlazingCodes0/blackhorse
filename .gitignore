@@ -30,3 +30,15 @@ memory/*.db*
 logs/trading.db
 logs/trading.db-wal
 logs/trading.db-shm
+
+# personal house state — my money, my roster, my watchlist (never public)
+config/treasury.json
+config/agents.json
+config/trading.json
+
+# personal session notes + machine-specific helpers (never public)
+.todo/
+todo.txt
+todo (copy 1).txt
+restart_btun.sh
+shutdown_btun.sh
