@@ -252,14 +252,30 @@ Default settings per interval (editable, per agent):
 **In the GUI** (Agents → Settings) this is one block: five buttons — `5m 15m 60m
 240m 1440m`.
 
-- Pressing a button makes it the **entry lane**; it and everything smaller grey
-  out. Choosing an interval loads that interval's **defaults** into the band
-  fields (buy ≤ / sell ≥ / R:R / stop / risk / max position).
+- Pressing a button makes it the **entry lane**; the smaller ones stay clickable
+  (grey `◂`) so you can always hand the driving lane back down. Choosing an
+  interval loads that interval's **defaults** into the band fields (buy ≤ / sell ≥
+  / R:R / stop / risk / max position).
+- Clicking the entry button itself walks the driving lane **up** to the next rung
+  in the climb; clicking a smaller interval walks it **back down** — the lane you
+  just left drops into the climb as a rung.
 - Buttons strictly larger stay clickable as **climb toggles** (green ✔ = rung in
   the climb). Each rung shows its own `60m rung · buy ≤ … · sell ≥ …`.
+- **Settings → Rungs only** (default **OFF**) bypasses the other signal gates and
+  lets the climb rungs decide alone. Turning it ON reveals the **Rung agreement**
+  selector: **ALL** rungs must agree, or **ANY** one rung is enough. Heart's hard
+  caps and order mechanics still apply; at least one rung is required.
 - **Save to agent policy** writes `strategy_intervals`, `channels` and `strategy`
   from the buttons. Band overrides are stored as
   `entry_strength_max_<iv>` / `exit_strength_min_<iv>`.
+
+The two optional **spread** and **MA cross** gates read one interval of your
+choosing — **Settings → Advanced → MA/spread gate interval** (per agent, default
+**15m**). Neither the entry lane nor the climb rungs feed them. The spread gate
+blocks BUY on a genuinely weakening spread and SELL on a genuinely improving one;
+the MA cross gate blocks BUY under a real bearish fast/slow gap (and SELL over a
+bullish one). An interval with no lane in the snapshot falls back to the entry
+lane's spread verdict and pulls its MAs live from the venue.
 
 Conflicts between agents are reconciled by the **broker**, and every resulting
 action still has to pass the **Heart**. See `docs/STRENGTH_CLIMB.md` for the full

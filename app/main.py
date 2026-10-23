@@ -294,6 +294,8 @@ class BlackHorse(AgentsMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("BlackHorse — multi-agent money system")
+        self._loop_proc = None
+        self._loop_loading = False
         from PyQt6.QtGui import QIcon
         self.setWindowIcon(QIcon(str(Path.home() / "blackhorse" / "logo.png")))
         self.resize(1100, 700)
@@ -876,17 +878,24 @@ class BlackHorse(AgentsMixin, QMainWindow):
         # ---- autonomous loop ----
         v.addWidget(QLabel("— Autonomous loop (runs the house on a timer, inside Heart's caps) —"))
         lrow = QHBoxLayout()
-        self._loop_proc = None
+        self._loop_proc = getattr(self, '_loop_proc', None)
         b_loop_start = QPushButton("▶ Start loop"); b_loop_start.clicked.connect(self._loop_start)
         b_loop_stop = QPushButton("■ Stop loop"); b_loop_stop.clicked.connect(self._loop_stop)
+        b_decide = QPushButton("⚡ Decide now")
+        b_decide.setToolTip("Fire a full loop sweep now: refresh signal, decide, Heart-gate, execute, record.")
+        b_decide.clicked.connect(self._loop_decide_now)
         from PyQt6.QtWidgets import QSpinBox
-        self.loop_interval = QSpinBox(); self.loop_interval.setRange(30, 3600); self.loop_interval.setValue(300)
-        lrow.addWidget(b_loop_start); lrow.addWidget(b_loop_stop)
+        self.loop_interval = QSpinBox(); self.loop_interval.setRange(15, 3600); self.loop_interval.setValue(300)
+        self.loop_interval.setToolTip("Seconds between loop cycles. Changing this applies LIVE — the daemon "
+                                      "re-reads it each cycle, no restart.")
+        self.loop_interval.valueChanged.connect(self._loop_set_interval)
+        lrow.addWidget(b_loop_start); lrow.addWidget(b_loop_stop); lrow.addWidget(b_decide)
         lrow.addWidget(QLabel("every")); lrow.addWidget(self.loop_interval); lrow.addWidget(QLabel("s"))
         lrow.addStretch(1)
         v.addLayout(lrow)
         self.loop_status = QLabel("loop stopped")
         v.addWidget(self.loop_status)
+        self._loop_load_control()
         v.addStretch(1)
 
         scroll.setWidget(w)
@@ -1333,14 +1342,57 @@ class BlackHorse(AgentsMixin, QMainWindow):
             self.heart_status.setText(f"heart error: {e}")
 
     # ================= LOOP control (on Trade page) =================
+    # The real loop is the systemd daemon (blackhorse-trader.service). These
+    # helpers talk to it through two files the daemon re-reads live:
+    #   logs/loop_control.json  -> {"interval_seconds": N}   (speed)
+    #   logs/loop_trigger.json  -> {"ts": <epoch>}           (Decide now)
+    # No duplicate loop process is ever spawned while the daemon is up; the
+    # singleton lock would make one exit anyway.
+    def _loop_paths(self):
+        return (BH/"logs"/"loop_control.json", BH/"logs"/"loop_trigger.json")
+
+    def _loop_daemon_active(self):
+        try:
+            return self._systemctl("is-active", "blackhorse-trader.service").stdout.strip() == "active"
+        except Exception:
+            return False
+
+    def _write_loop_control(self, interval_seconds):
+        ctrl = BH/"logs"/"loop_control.json"
+        try:
+            data = json.loads(ctrl.read_text()) if ctrl.exists() else {}
+        except Exception:
+            data = {}
+        data["interval_seconds"] = int(interval_seconds)
+        data["ts"] = time.time()
+        ctrl.parent.mkdir(parents=True, exist_ok=True)
+        ctrl.write_text(json.dumps(data, indent=2))
+
+    def _loop_load_control(self):
+        """Seed the spinbox from the saved control file so the GUI shows the
+        daemon's real cadence, without writing anything back on load."""
+        try:
+            v = int(json.loads((BH/"logs"/"loop_control.json").read_text()).get("interval_seconds"))
+        except Exception:
+            return
+        if 15 <= v <= 3600:
+            self._loop_loading = True
+            self.loop_interval.setValue(v)
+            self._loop_loading = False
+            if self._loop_daemon_active():
+                self.loop_status.setText(
+                    f"loop RUNNING (systemd: blackhorse-trader.service, every {v}s)")
+
     def _loop_start(self):
-        import sys as _s
+        if self._loop_daemon_active():
+            self.loop_status.setText(
+                f"loop RUNNING (systemd: blackhorse-trader.service, every "
+                f"{self.loop_interval.value()}s)")
+            return
         if getattr(self, "_loop_proc", None) and self._loop_proc.poll() is None:
             self.loop_status.setText("loop already running"); return
-        if self._systemctl("is-active", "blackhorse-trader.service").stdout.strip() == "active":
-            self.loop_status.setText("loop already running (systemd: blackhorse-trader.service)")
-            return
-        args = [sys.executable, str(Path.home()/"blackhorse"/"trade"/"loop.py"),
+        self._write_loop_control(self.loop_interval.value())
+        args = [sys.executable, str(BH/"trade"/"loop.py"),
                 "--interval", str(self.loop_interval.value()), "--no-brain"]
         self._loop_proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.loop_status.setText(f"loop RUNNING (pid {self._loop_proc.pid}, every {self.loop_interval.value()}s)")
@@ -1348,7 +1400,65 @@ class BlackHorse(AgentsMixin, QMainWindow):
     def _loop_stop(self):
         if getattr(self, "_loop_proc", None) and self._loop_proc.poll() is None:
             self._loop_proc.terminate()
+        if self._loop_daemon_active():
+            self._systemctl("stop", "blackhorse-trader.service")
         self.loop_status.setText("loop stopped")
+
+    def _loop_set_interval(self, value):
+        """Live speed change: the daemon wakes on its current cycle, reads the new
+        value, and uses it from the next sleep on. No restart, no leaked processes."""
+        if getattr(self, "_loop_loading", False):
+            return
+        self._write_loop_control(value)
+        suffix = "the running daemon picks it up this cycle" if (
+            self._loop_daemon_active() or
+            (getattr(self, "_loop_proc", None) and self._loop_proc.poll() is None)
+        ) else "saved; applies when the loop runs"
+        self.loop_status.setText(f"loop speed set to every {value}s — {suffix}")
+
+    def _loop_decide_now(self):
+        """Fire the REAL loop path now. Sleeping daemon -> stamp the trigger file
+        (it wakes for one extra sweep on the next poll). No daemon -> run one
+        full sweep here via a subprocess, exactly like `loop.py --once`."""
+        if getattr(self, "house_view", None) is not None:
+            self.house_view.setText("running a full loop sweep now… (signal → decide → Heart → execute → record)")
+            QApplication.processEvents()
+        try:
+            if self._loop_daemon_active():
+                trig = BH/"logs"/"loop_trigger.json"
+                trig.parent.mkdir(parents=True, exist_ok=True)
+                trig.write_text(json.dumps({"ts": time.time(), "by": "gui"}))
+                if getattr(self, "house_view", None) is not None:
+                    self.house_view.setText(
+                        "Decide now: the running daemon will fire a full sweep within "
+                        "its next poll (a few seconds). Watch the Decisions tab — it "
+                        "records to the same table as the daemon.")
+                return
+            # no daemon: run one real sweep in-process (holding the singleton lock
+            # is fine because nothing else is running).
+            import sys as _s
+            if str(BH/"trade") not in _s.path:
+                _s.path.insert(0, str(BH/"trade"))
+            import loop as _loop
+            rec = _loop.sweep(refresh_signal=True, ask_brain=False, cfg=_loop._trading())
+            lines = self._loop_render_sweep(rec)
+            if getattr(self, "house_view", None) is not None:
+                set_text_keep_scroll(self.house_view, "\n".join(lines))
+        except Exception as e:
+            if getattr(self, "house_view", None) is not None:
+                set_text_keep_scroll(self.house_view, f"loop sweep error: {e}")
+
+    def _loop_render_sweep(self, rec):
+        lines = [f"LOOP SWEEP {rec.get('ts', '')}  →  {rec.get('decision')}"]
+        if rec.get("reason"):
+            lines.append(f"  reason: {rec['reason']}")
+        for pair, p in (rec.get("per_pair") or {}).items():
+            lines.append(f"  [{pair}] {p.get('decision')} — {p.get('reason', '')}")
+            for ex in (p.get("executed") or []):
+                lines.append(f"      executed: {ex.get('action')} {ex.get('mode')} "
+                             f"ok={ex.get('ok')} id={ex.get('id')} blocked={ex.get('blocked')}")
+        lines.append("  (UNVALIDATED — hypothesis only; Heart-gated)")
+        return lines
 
     # ================= CryptoBoqor site launcher (on Dashboard) =================
     def _cb_running(self):
@@ -1492,10 +1602,20 @@ class BlackHorse(AgentsMixin, QMainWindow):
             "color:#d97706" if (res.get("cancel_failed") or res.get("positions_left")) else "color:#16a34a")
 
     def house_decide(self):
+        """'Decide now' — fires the REAL loop path (signal → decide → Heart →
+        execute → record), not just a passive broker read. Sleeping daemon ->
+        wake it via the trigger file; otherwise run one full sweep here."""
+        self._loop_decide_now()
+        # after the sweep is firing/queued, also show the broker's explain so the
+        # reasoning view (as before) stays available and honest.
+        QTimer.singleShot(50, self._house_decide_explain)
+
+    def _house_decide_explain(self):
         try:
             _, broker = self._agents_mod()
             d = broker.decide()
-            lines = [f"HOUSE ACTION: {d['action']}  ({d.get('reason', d.get('profile',''))})"]
+            lines = ["— reasoning breakdown —",
+                     f"HOUSE ACTION: {d['action']}  ({d.get('reason', d.get('profile',''))})"]
             lines += ["  - " + l for l in d.get("explain", [])]
             if d.get("action") in ("BUY", "SELL"):
                 lines.append(f"  entry {d.get('entry')} stop {d.get('stop')} target {d.get('target')} "

@@ -33,7 +33,12 @@ SIGNAL = BH / "logs" / "signal_latest.json"
 SETUP = BH / "config" / "signal_setup.json"
 TRADING = BH / "config" / "trading.json"
 SHUTDOWN = BH / "logs" / "shutdown.json"
+CONTROL = BH / "logs" / "loop_control.json"      # GUI-editable live knobs
+TRIGGER = BH / "logs" / "loop_trigger.json"      # GUI stamps this to force a cycle NOW
+WANT = BH / "logs" / "loop_want.json"            # GUI stamps run/stop intent
 
+DEFAULT_INTERVAL = 300
+MIN_INTERVAL = 15
 _STOP = False
 _LOCK_FD = None
 
@@ -139,6 +144,33 @@ def _load(path, default):
 def _save(path, d):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(d, indent=2))
+
+
+def _control() -> dict:
+    """Live knobs the GUI writes to logs/loop_control.json. The daemon re-reads
+    this every cycle so interval changes apply without a service restart."""
+    return _load(CONTROL, {})
+
+
+def _interval_from(default: int) -> int:
+    """Effective cadence in seconds: the GUI control (if any), clamped, else the
+    CLI/service default. Never below MIN_INTERVAL — a 0 would spin the CPU."""
+    try:
+        v = int(_control().get("interval_seconds"))
+    except (TypeError, ValueError):
+        return max(MIN_INTERVAL, int(default))
+    return max(MIN_INTERVAL, v)
+
+
+def _trigger_due(last_seen: float) -> float:
+    """Return the trigger stamp if the GUI asked for a cycle since `last_seen`,
+    else 0. Lets 'Decide now' fire the daemon's real path instead of duplicating
+    the sweep in the GUI process (the singleton lock forbids two loops)."""
+    try:
+        ts = float(_load(TRIGGER, {}).get("ts") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return ts if ts > last_seen else 0.0
 
 
 def _signal_age() -> float:
@@ -387,9 +419,9 @@ def cycle(refresh_signal=True, ask_brain=True, pair=None, cfg=None) -> dict:
     return sweep(refresh_signal, ask_brain, pair=pair or _setup().get("pair") or "DOT/USD", cfg=cfg)
 
 
-def daemon(interval=300, **kw):
+def daemon(interval=DEFAULT_INTERVAL, **kw):
     _install_signals()
-    print(f"BlackHorse loop awake — every {interval}s")
+    print(f"BlackHorse loop awake — default cadence {interval}s (GUI may adjust live)")
     # BOOT RECONCILE: before we decide anything, ask the exchange what is really
     # open (orders + positions). This is what stops a position closed by hand on
     # Kraken, or while the bot was down, from being counted as tied-up forever.
@@ -402,6 +434,9 @@ def daemon(interval=300, **kw):
     except Exception as e:
         print(json.dumps({"boot_reconcile": f"error: {e}"}))
     reason = "clean exit"
+    # last_trigger is the newest 'Decide now' stamp we've already honoured, so a
+    # press while we sleep wakes us for exactly one extra cycle.
+    last_trigger = float(_load(TRIGGER, {}).get("ts") or 0)
     try:
         while not _STOP:
             cycle_start = time.time()
@@ -413,10 +448,18 @@ def daemon(interval=300, **kw):
             except Exception as e:
                 print("loop error:", e)
             # sleep in short steps: while any LONG is open, watch bid/ask for the exit.
-            # interval is measured from cycle START, so a slow sweep eats into the
-            # sleep instead of pushing the cadence out (--interval 300 really is 300s).
-            end = cycle_start + max(30, interval)
+            # interval is re-read from loop_control.json each cycle (GUI live speed)
+            # and measured from cycle START, so a slow sweep eats into the sleep
+            # instead of pushing the cadence out. A fresh GUI trigger cuts the
+            # sleep short so 'Decide now' fires the REAL daemon path immediately.
+            eff = _interval_from(interval)
+            end = cycle_start + eff
             while time.time() < end and not _STOP:
+                trig = _trigger_due(last_trigger)
+                if trig:
+                    last_trigger = trig
+                    print(json.dumps({"woke_by": "decide_now"}))
+                    break
                 try:
                     import portfolio, exits
                     if any(str(p.get("side")).upper() == "BUY" and not p.get("exit_txid")
@@ -518,7 +561,7 @@ def _morning_brief(journal: list) -> dict:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true")
-    ap.add_argument("--interval", type=int, default=300)
+    ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
     ap.add_argument("--pair", default=None)
     ap.add_argument("--no-signal", action="store_true")
     ap.add_argument("--no-brain", action="store_true")

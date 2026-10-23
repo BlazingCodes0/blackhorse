@@ -156,6 +156,17 @@ SETTINGS = [
          "exitEligible to sell, while the rungs only need to be in their zone. Ignored when the "
          "climb is off (no rungs listed)."),
     ]),
+    ("Rungs only (bypass other gates)", [
+        ("rungs_only", "Rungs only — bypass all other signal gates", "bool", "policy",
+         "OFF (default) = normal: entry band/eligibility, star alignment, brain/HTF, proven edge, "
+         "spread/MA and R:R gates all apply, and every rung must agree. ON = the climb rungs are "
+         "the ONLY signal: entry band/eligibility, star alignment, brain stance/risk, MTF, HTF, "
+         "proven edge, spread/MA and R:R gates are bypassed. Heart's hard risk caps, spot-only "
+         "sells, sizing and stop/target mechanics still apply. Requires at least one climb rung."),
+        ("rung_require_all", "Rung agreement required", "combo:ALL,ANY", "policy",
+         "Shown when Rungs only is ON. ALL = every rung must agree (default). ANY = one rung "
+         "agreeing is enough — no waiting for every rung."),
+    ]),
     ("Where it trades", [
         ("pairs", "Pairs", "list", "agent", "Comma list, e.g. DOT/USD,ETH/USD. Empty = every pair."),
         ("mode", "Mode", "combo:PAPER,LIVE", "agent",
@@ -208,22 +219,28 @@ SETTINGS = [
         ("watch_pct", "Watch band % (of stop)", "float", "policy",
          "Arm the resting limit when price comes within this % of the stop level. Default 0.5."),
     ]),
-    ("Advanced — spread & MA cross (entry-lane driven)", [
+    ("Advanced — spread & MA cross (gate interval driven)", [
+        ("ma_gate_interval", "MA/spread gate interval", "combo:5m,15m,60m,240m,1440m", "policy",
+         "WHICH interval feeds the spread verdict and the MA cross gates. Default 15m. "
+         "Both gates read THIS interval's own lane/candles — the entry lane and the climb "
+         "rungs never feed them. Pick 15m for the fast tape, 60m/240m for the slower read. "
+         "An interval with no lane in the snapshot falls back to the entry lane's spread "
+         "verdict and pulls its MAs live from the venue."),
         ("require_spread_agreement", "Spread verdict gate", "bool", "policy",
          "OFF (default) = no spread filtering — exactly the old behavior. ON = block BUY only "
-         "when the ENTRY lane's own spread verdict is genuinely weakening, and SELL only when "
-         "genuinely improving. Chop / noise / weak drift never block. Read from the driving "
-         "(smallest listed) interval — rungs never feed it."),
+         "when the gate interval's own spread verdict is genuinely weakening, and SELL only "
+         "when genuinely improving. Chop / noise / weak drift never block. Read from the "
+         "MA/spread gate interval above."),
         ("require_ma_cross_agreement", "MA cross gate", "bool", "policy",
-         "OFF (default) = no MA filtering. ON = block BUY while the ENTRY lane's fast MA sits "
+         "OFF (default) = no MA filtering. ON = block BUY while the gate interval's fast MA sits "
          "below the slow (bearish) and SELL while above (bullish) — gaps under the coil "
-         "exemption never block. Read from the driving lane only."),
+         "exemption never block. Read from the MA/spread gate interval above."),
         ("ma_cross_fast", "MA fast period", "int", "policy",
-         "Fast MA length on the entry lane. Default 20 (= SignalBot's ma20, free). Any other "
-         "value is computed locally from the entry interval's own candles."),
+         "Fast MA length on the gate interval. Default 20 (= SignalBot's ma20, free). Any other "
+         "value is computed locally from the gate interval's own candles."),
         ("ma_cross_slow", "MA slow period", "int", "policy",
-         "Slow MA length on the entry lane. Default 50 (= SignalBot's ma50). Any other value "
-         "is computed locally from the entry interval's own candles."),
+         "Slow MA length on the gate interval. Default 50 (= SignalBot's ma50). Any other value "
+         "is computed locally from the gate interval's own candles."),
         ("ma_cross_min_gap_pct", "MA coil exemption (%)", "float", "policy",
          "Gaps smaller than this count as neutral (a coil, not a bias) and never block. "
          "Default 0.15."),
@@ -998,11 +1015,16 @@ class AgentsMixin:
         d = load_agent_orders(a["id"])["last_decision"]
         last = (f"<b>{d['action']}</b> — {d.get('reason') or ''} <span style='color:{GREY}'>({_ago(d['ts'])})</span>"
                 if d else f"<span style='color:{GREY}'>no decision recorded yet</span>")
-        ivs = pol.get("strategy_intervals") or []
+        ivs = sorted([x for x in (pol.get("strategy_intervals") or []) if x in INTV], key=_ivmin)
         entry = ivs[0] if ivs else "—"
         climb = ", ".join(ivs[1:]) if len(ivs) > 1 else "off — trades on its own strength"
         rows = [("Status", f"<b style='color:{GREEN if on else GREY}'>{'ENABLED' if on else 'disabled'}</b>"),
                 ("Entry interval", f"<b>{entry}</b> · climb: {climb}"),
+                ("MA/spread gate",
+                 "<b>%s</b> · spread %s · MA cross %s" % (
+                     pol.get("ma_gate_interval") or "15m",
+                     "ON" if pol.get("require_spread_agreement") else "OFF",
+                     "ON" if pol.get("require_ma_cross_agreement") else "OFF")),
                 ("Mode", f"<b>{a.get('mode') or '-'}</b>"),
                 ("Capital (total budget)", f"${a.get('capital')}" + self._budget_html(a["id"])),
                 ("Pairs", ", ".join(a.get("pairs") or []) or "all pairs"),
@@ -1017,6 +1039,15 @@ class AgentsMixin:
                 ("Star alignment",
                  "<b>" + ("ON — entry lane must be eligible" if pol.get("star_alignment", False)
                           else "OFF — strength zones only") + "</b>"),
+                ("Rungs only",
+                 "<b>ON — rungs decide ("
+                 + ("one rung is enough"
+                    if str(pol.get("rung_require_all", "ALL")).strip().upper() in
+                    ("ANY", "FALSE", "0", "NO", "OFF")
+                    else "every rung must agree")
+                 + ")</b>"
+                 if pol.get("rungs_only", False)
+                 else "<b>OFF — normal gates · ALL rungs</b>"),
                 ("Min net profit to sell", f"{pol.get('exit_min_net_pct', '-')}%  · stored sets: {', '.join(pol.get('exit_price_sets') or [])}"),
                 ("Stop loss",
                  ("<b style='color:%s'>ON</b> — %s" % (AMBER, pol.get("stop_mode", "price_watch")))
@@ -1058,6 +1089,7 @@ class AgentsMixin:
         page = QWidget()
         pv = QVBoxLayout(page)
         self._agent_fields = {}
+        self._field_labels = {}
         self._rung_fields = {}
         # Entry lane & strength climb — the interval buttons ARE the profiles.
         pv.addWidget(self._build_interval_block(a, pol))
@@ -1066,11 +1098,24 @@ class AgentsMixin:
             grid = QGridLayout(g)
             grid.setHorizontalSpacing(14)
             grid.setVerticalSpacing(8)
-            for i, (key, label, kind, where, tip) in enumerate(fields):
+            row = col = 0
+            for key, label, kind, where, tip in fields:
                 if key in ('strategy', 'intervals', 'channels'):
                     continue  # intervals are handled by the entry/climb block
-                r, c = divmod(i, 2)
                 cur = a.get(key) if where == 'agent' else pol.get(key)
+                if kind == 'bool':
+                    # Checkboxes carry their own label and take the whole row. Laying
+                    # them into the 2-column grid made them overlap (and hide) the
+                    # field beside them — that is why the MA/spread interval combo
+                    # vanished under the "Spread verdict gate" checkbox.
+                    if col:
+                        row += 1; col = 0
+                    w = QCheckBox(label); w.setChecked(bool(cur)); w.setMinimumWidth(0)
+                    w.setToolTip(tip)
+                    grid.addWidget(w, row, 0, 1, 4)
+                    self._agent_fields[key] = (w, kind, where, cur)
+                    row += 1
+                    continue
                 lab = QLabel(label)
                 lab.setToolTip(tip)
                 lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -1079,20 +1124,24 @@ class AgentsMixin:
                     items = kind.split(':')[1].split(',')
                     w.addItems(items)
                     w.setCurrentText(str(cur or w.itemText(0)))
-                elif kind == 'bool':
-                    w = QCheckBox(label); w.setChecked(bool(cur)); w.setMinimumWidth(0)
                 else:
                     txt = ','.join(cur) if isinstance(cur, list) else ('' if cur is None else str(cur))
                     w = QLineEdit(txt)
                 w.setMinimumWidth(150); w.setToolTip(tip)
-                if kind == 'bool':
-                    grid.addWidget(w, r, 0, 1, 4)
+                self._field_labels[key] = lab
+                grid.addWidget(lab, row, col*3); grid.addWidget(w, row, col*3+1)
+                if col == 0:
+                    grid.setColumnMinimumWidth(2, 24)
+                    col = 1
                 else:
-                    grid.addWidget(lab, r, c*3); grid.addWidget(w, r, c*3+1)
-                if c == 0: grid.setColumnMinimumWidth(2,24)
+                    col = 0; row += 1
                 self._agent_fields[key] = (w, kind, where, cur)
             grid.setColumnStretch(1,1); grid.setColumnStretch(4,1)
             pv.addWidget(g)
+        ro = self._agent_fields.get('rungs_only')
+        if ro:
+            ro[0].toggled.connect(self._sync_rungs_only_ui)
+        self._sync_rungs_only_ui()
         row = QHBoxLayout()
         b_save = QPushButton("Save to agent policy")
         b_save.setStyleSheet("background:#1d4ed8;color:white;font-weight:bold;padding:6px 16px")
@@ -1111,6 +1160,19 @@ class AgentsMixin:
         pv.addStretch(1)
         self.ag_settings_scroll.setWidget(page)
 
+    def _sync_rungs_only_ui(self, *_):
+        """The rung agreement type is only relevant when RUNGS ONLY is enabled, so
+        hide the agreement row until the user turns that mode on."""
+        ro = self._agent_fields.get('rungs_only')
+        ag = self._agent_fields.get('rung_require_all')
+        if not ro or not ag:
+            return
+        on = bool(ro[0].isChecked())
+        for w in (self._field_labels.get('rung_require_all'), ag[0]):
+            if w is not None:
+                w.setVisible(on)
+                w.setEnabled(on)
+
     # ---------------------------------------------------------------- interval grid
     def _build_interval_block(self, a, pol):
         self._interval_pol = pol
@@ -1118,6 +1180,9 @@ class AgentsMixin:
         box = QVBoxLayout(g)
         iv = [x for x in (pol.get('strategy_intervals') or [])
               if x in INTV]
+        # the decider takes the SMALLEST listed interval as the entry lane — sort so
+        # the GUI shows the same driving lane the bot actually trades.
+        iv = sorted(iv, key=_ivmin)
         if not iv:
             iv = ['15m', '60m', '240m']
         self._interval_entry = iv[0]
@@ -1153,21 +1218,30 @@ class AgentsMixin:
                 b.setText(f"▶ {x} ◀")
                 b.setChecked(True)
                 b.setEnabled(True)
+                b.setToolTip(f"{x} is the entry (driving) lane — the one this agent trades. "
+                             f"Click to hand the driving lane to the next rung up.")
                 b.setStyleSheet("background:#1d4ed8;color:white;font-weight:bold")
             elif _ivmin(x) < emin:
-                b.setText(x)
+                # smaller than the entry — NOT disabled: click it to pull the driving
+                # lane back down. (it used to grey out and lock the lane forever)
+                b.setText(f"◂ {x}")
                 b.setChecked(False)
-                b.setEnabled(False)
-                b.setStyleSheet("color:#6b7280;background:#111827")
+                b.setEnabled(True)
+                b.setToolTip(f"{x} is smaller than the current entry lane {entry} — "
+                             f"click it to make {x} the driving lane again.")
+                b.setStyleSheet("color:#9ca3af;background:#111827;border:1px solid #374151")
             elif x in self._interval_on:
                 b.setText(f"✔ {x}")
                 b.setChecked(True)
                 b.setEnabled(True)
+                b.setToolTip(f"{x} is a climb rung — it must clear its own band before "
+                             f"{entry} may trade. Click to take it out of the climb.")
                 b.setStyleSheet("background:#065f46;color:white")
             else:
                 b.setText(f"＋ {x}")
                 b.setChecked(False)
                 b.setEnabled(True)
+                b.setToolTip(f"Add {x} to the climb as a rung above {entry}.")
                 b.setStyleSheet("")
             b.blockSignals(False)
         self._rebuild_rung_rows()
@@ -1175,11 +1249,9 @@ class AgentsMixin:
             self._apply_interval_defaults(entry)
 
     def _interval_clicked(self, x):
-        agents, _ = self._agents_mod()
-        def defaults_for(k):
-            return [y for y in (agents.interval_defaults().get(k, {}).get('climb') or [])
-                    if _ivmin(y) > _ivmin(k)]
         if x == self._interval_entry:
+            # the entry button walks the driving lane UP the ladder: the smallest
+            # rung on takes over as the driving lane.
             nxt = [y for y in INTV if _ivmin(y) > _ivmin(x) and y in self._interval_on]
             if nxt:
                 self._interval_entry = nxt[0]
@@ -1187,8 +1259,18 @@ class AgentsMixin:
             else:
                 return  # keep a lone entry; nothing to release onto
         elif _ivmin(x) < _ivmin(self._interval_entry):
+            # a SMALLER interval was clicked — pull the driving lane back down to it.
+            # The old driving lane drops into the climb as a rung (it is higher than
+            # the new entry), the rungs that are still above the new entry stay on,
+            # and the new lane's own default climb is merged in.
+            old_entry = self._interval_entry
+            keep = {y for y in self._interval_on if _ivmin(y) > _ivmin(x)}
+            if _ivmin(old_entry) > _ivmin(x):
+                keep.add(old_entry)
+            for y in self._interval_defaults_climb(x):
+                keep.add(y)
             self._interval_entry = x
-            self._interval_on = list(self._interval_defaults_climb(x))
+            self._interval_on = [y for y in INTV if y in keep]
         else:
             if x in self._interval_on:
                 self._interval_on.remove(x)
@@ -1216,16 +1298,19 @@ class AgentsMixin:
                         key=_ivmin)
         entry = self._interval_entry
         self._rung_fields = {}
+        smaller = [x for x in INTV if _ivmin(x) < _ivmin(entry)]
+        back = (f" Click a smaller interval ({', '.join(smaller)}) to pull the driving lane "
+                f"back down to it." if smaller else "")
         if active:
             names = ", ".join(active)
             self._interval_status.setText(
                 f"<b>{entry}</b> is the entry lane (the one this agent trades). Climb ON: <b>{names}</b> — "
                 f"before {entry} may buy or sell, each rung must sit in its own buy/sell RANGE. "
-                f"Click a larger interval to add or remove it from the climb.")
+                f"Click a larger interval to add or remove it from the climb.{back}")
         else:
             self._interval_status.setText(
                 f"<b>{entry}</b> is the entry lane and the climb is <b>off</b> — it trades on its own "
-                f"strength alone. Click a larger interval above to add a climb rung.")
+                f"strength alone. Click a larger interval above to add a climb rung.{back}")
         for x in active:
             old = (self._interval_pol.get('rung_bands') or {}).get(x) or {}
             em = self._interval_pol.get('entry_strength_max_' + x,

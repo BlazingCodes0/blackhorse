@@ -43,11 +43,36 @@ The owner wanted the machinery visible and self-serve:
   lane must additionally be **entryEligible** to buy / **exitEligible** to sell (its own
   raw signal), while the rungs only need their strength inside their zone. Ignored when
   the climb is off.
+- **Rungs only** (per agent, GUI *Rungs only — bypass all other signal gates*, default
+  **OFF**): when ON, the climb rungs are the **only** signal. The entry lane's band and
+  eligibility, star alignment, brain stance/risk, MTF, HTF, proven-edge, spread/MA and
+  R:R gates are bypassed; direction is whatever the rungs say. The GUI then reveals the
+  **Rung agreement** selector: **ALL** = every rung must agree, **ANY** = one agreeing
+  rung is enough. Heart's hard risk caps, spot-only sells, sizing and stop/target
+  mechanics are **never** bypassed. Requires at least one climb rung (with the climb off
+  the agent HOLDs). With Rungs only OFF, normal behavior is unchanged: all configured
+  gates apply and every rung must agree.
 - **No hidden default.** If only the entry interval is listed, the climb is OFF and
   the lane trades on its own strength alone. (This removes the old default-60m rung.)
 - Stored form: `strategy_intervals = [entry] + sorted(active rungs)`; rung ranges in
   `rung_bands` (legacy `entry_strength_max_<iv>` / `exit_strength_min_<iv>` still read
   as a fallback, and apply only to rungs — the entry lane uses the agent globals).
+
+### The MA/spread gate interval (2026-10-22)
+
+The two optional gates — **spread verdict** and **MA cross** — no longer read a
+hard-coded lane. Each agent carries `ma_gate_interval` (GUI: *Advanced → MA/spread
+gate interval*, **default `15m`**); both gates read that interval's own lane and
+candles. The entry lane and the climb rungs never feed them.
+
+- The spread verdict exists only in the snapshot, so if the chosen interval has no
+  lane there the verdict falls back to the entry lane (announced in the decision
+  reasons); the MAs are still computed live from the chosen interval's candles.
+- `ma_cross_fast` / `ma_cross_slow` (default 20/50) apply to the gate interval.
+  SignalBot's emitted ma20/ma50 are used when the periods are 20/50 and the lane is
+  present; any other periods are computed locally (cached 120s).
+- The Decisions panel cites the interval it actually read, e.g. `60m spread
+  (MA/spread gate lane) …`.
 
 ## Default settings per interval (editable)
 
@@ -64,9 +89,15 @@ The owner wanted the machinery visible and self-serve:
 The old Strategy combo + Intervals text box + Profile dropdown are replaced by a
 single **entry lane & strength climb** block: five buttons — `5m 15m 60m 240m 1440m`.
 
-- Pressing a button makes it the **entry lane**; it and **everything smaller** grey
-  out (disabled). Choosing an interval loads that interval's **default settings**
-  into the band fields (buy ≤ / sell ≥ / R:R / stop / risk / max position).
+- Pressing a button makes it the **entry lane**; the smaller intervals stay
+  clickable (grey `◂`) so the driving lane can always be handed back down.
+  Choosing an interval loads that interval's **default settings** into the band
+  fields (buy ≤ / sell ≥ / R:R / stop / risk / max position).
+- Clicking the **entry button** walks the driving lane **up** to the smallest rung
+  in the climb (it stops at a lone entry). Clicking a **smaller interval** walks
+  it **back down**: the lane you just left drops into the climb as a rung, the
+  rungs still above the new entry stay on, and the new lane's default climb is
+  merged in.
 - Buttons **strictly larger** stay clickable and are the **climb toggles**
   (green ✔ = in the climb). Each rung row shows four editable numbers:
   `60m rung · buy [lo–hi] · sell [lo–hi]` — saved as the nested `rung_bands` dict.
@@ -145,6 +176,23 @@ The name↔interval maps that survived the profile deletion were removed everywh
   bare config = flat single lane) all pass; GUI `strength_chain`/`_chain_html` render
   ranges + "entry not elig / exit elig" with no crash.
 - GUI offscreen smoke: agent_6 loads entry 60m + climb {240m,1440m}; pressing 15m makes
-  it the entry, greys below, loads 15m defaults and the default climb {60m,240m};
-  toggling a rung updates the state; Save writes `strategy_intervals`/`strategy` and
-  clears any legacy `channels` override.
+  it the entry, loads 15m defaults and the default climb {60m,240m}; toggling a rung
+  updates the state; Save writes `strategy_intervals`/`strategy` and clears any legacy
+  `channels` override.
+
+## Fix: the driving lane can be handed back down (2026-10-22)
+
+The grid used to **disable** every interval smaller than the entry lane, so once the
+driving lane was walked up to 240m the agent was stuck there — there was no way to
+hand it back to 60m/15m. The rule "the smallest listed interval is the entry lane"
+was right; the lock was wrong.
+
+- Smaller intervals now stay **enabled** (grey `◂`, tooltip: click to make this the
+  driving lane again) instead of `setEnabled(False)`.
+- Clicking one walks the driving lane **back down**: the lane just left drops into
+  the climb as a rung, the rungs still above the new entry stay on, and the new
+  lane's default climb is merged in.
+- `_build_interval_block` now **sorts** the stored `strategy_intervals` by minutes,
+  so the GUI always shows the same entry lane the decider picks (smallest listed).
+- Verified offscreen: entry 240m → click 60m → entry 60m with the 240m rung kept;
+  `decider._chain_from()` agrees with the GUI entry on every round trip.
