@@ -54,8 +54,10 @@ async function main() {
   cfg = { ...cfg, pair, exchange };
   const channelsArg = arg('channels', '');
   if (channelsArg) {
-    const ivs = channelsArg.split(',').map(s => s.trim());
-    cfg = { ...cfg, custom: { ripple: [ivs[0] || '60m'], wave: [ivs[1] || '240m'], tide: [ivs[2] || '1440m'] } };
+    const ivs = channelsArg.split(',').map(s => s.trim()).filter(Boolean);
+    // Fill up to 3 slots; if < 3, repeat last to keep slots populated
+    while (ivs.length < 3) ivs.push(ivs[ivs.length - 1] || '60m');
+    cfg = { ...cfg, custom: { ripple: [ivs[0]], wave: [ivs[1]], tide: [ivs[2]] } };
     strategy = 'custom';
   }
 

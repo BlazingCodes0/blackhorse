@@ -199,15 +199,20 @@ def _pair_step(pair, primary, refresh_signal, ask_brain, cfg, setup) -> dict:
     """Refresh + observe + think + decide + act for ONE pair, on that pair's own signal."""
     import signals
     prec = {}
-    channels = setup.get("channels") or None
     if refresh_signal and signals.age(pair) > cfg.get("signal_max_age", 600):
         try:
-            import signalbot
-            sig = signalbot.run(pair=pair, channels=channels, merge_daytrade=True,
-                                latest=(pair == primary))
+            import signal_acq
+            sig = signal_acq.acquire(pair=pair, merge_daytrade=True)
             prec["signal_refresh"] = "ok" if sig.get("available") else sig.get("error")
         except Exception as e:
-            prec["signal_refresh"] = f"error: {e}"
+            try:
+                import signalbot
+                channels = setup.get("channels") or None
+                sig = signalbot.run(pair=pair, channels=channels, merge_daytrade=True,
+                                    latest=(pair == primary))
+                prec["signal_refresh"] = "ok" if sig.get("available") else sig.get("error")
+            except Exception as e2:
+                prec["signal_refresh"] = f"error: {e2}"
     try:
         import observer
         prec["observation"] = observer.note(pair, use_latest=True).get("id")

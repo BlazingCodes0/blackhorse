@@ -26,7 +26,7 @@
   },
   "caps": {
     "max_position_pct": 25.0,
-    "max_open_positions": 10,
+    "max_open_positions": 50,
     "max_daily_loss_pct": 3.0,
     "max_drawdown_pct": 10.0,
     "max_orders_per_hour": 12,
