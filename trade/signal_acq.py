@@ -13,6 +13,7 @@ SIGNALS_DIR = BH / "logs" / "signals"
 LATEST = BH / "logs" / "signal_latest.json"
 SETUP = BH / "config" / "signal_setup.json"
 TRADING_CFG = BH / "config" / "trading.json"
+LOG = BH / "logs" / "signal_acq.log"
 
 # cache: (pair, interval) -> last normalized channel with ts
 _CACHE = {}  # key -> {"ts": float, "ch": dict}
@@ -96,16 +97,72 @@ def union_intervals_for_pair(pair: str) -> list:
     return ivs
 
 
-def _batch(ivs, max_age=300):
-    now = time.time()
-    missing = []
-    fresh = []
-    for iv in ivs:
-        key = iv  # cached per interval globally? or per pair - use pair+iv
-        c = _CACHE.get(iv)  # we'll key differently below
-        # better keyed by pair:iv
-        fresh.append((iv, None))
-    return missing, fresh
+def _log(rec: dict):
+    """Append one acquisition event so a short refresh can be explained later."""
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **rec}
+        with LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+    except Exception:
+        pass
+
+
+def _merge_channels(snap, merged_channels, pair, now):
+    """Merge one normalized sidecar run into the growing per-interval map."""
+    added = []
+    for ch in (snap.get("channels") or {}).values():
+        iv = ch.get("interval")
+        if iv and iv not in merged_channels:
+            merged_channels[iv] = ch
+            _CACHE[f"{pair}:{iv}"] = {"ts": now, "ch": ch}
+            added.append(iv)
+    return added
+
+
+def _run_batch(pair, exchange, batch, timeout):
+    """Run one sidecar batch. Never raises: returns (snapshot|None, info)."""
+    import signalbot
+    slug = str(pair).replace("/", "-").upper()
+    RAW = BH / "logs" / f"signal_raw_{slug}_acq_{int(time.time() * 1000)}.json"
+    cmd = [_node(), str(SIDECAR), "--pair", pair, "--strategy", "custom",
+           "--exchange", exchange, "--out", str(RAW)]
+    cmd += ["--channels", ",".join(batch)]
+    t0 = time.time()
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=str(BH))
+    except subprocess.TimeoutExpired:
+        info = {"ok": False, "error": f"timeout after {timeout}s",
+                "ms": int((time.time() - t0) * 1000)}
+        _log({"event": "batch", "pair": pair, "batch": batch, **info})
+        return None, info
+    ms = int((time.time() - t0) * 1000)
+    try:
+        meta = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
+    except Exception:
+        meta = {}
+    if not meta.get("ok"):
+        err = meta.get("error") or (r.stderr or "no sidecar output")[-300:]
+        info = {"ok": False, "error": str(err)[-300:], "ms": ms, "rc": r.returncode}
+        _log({"event": "batch", "pair": pair, "batch": batch, **info})
+        return None, info
+    try:
+        raw = json.loads(RAW.read_text())
+        snap = signalbot.normalize(raw, meta)
+    except Exception as e:
+        info = {"ok": False, "error": f"parse/normalize: {e}", "ms": ms}
+        _log({"event": "batch", "pair": pair, "batch": batch, **info})
+        return None, info
+    finally:
+        try:
+            RAW.unlink()
+        except Exception:
+            pass
+    ivs = sorted({c.get("interval") for c in (snap.get("channels") or {}).values()
+                  if c.get("interval")})
+    info = {"ok": True, "ms": ms, "channels": ivs}
+    _log({"event": "batch", "pair": pair, "batch": batch, **info})
+    return snap, info
 
 
 def acquire(pair="DOT/USD", strategy="swing", exchange=None, timeout=180,
@@ -123,9 +180,19 @@ def acquire(pair="DOT/USD", strategy="swing", exchange=None, timeout=180,
     if not union:
         union = ["15m", "60m", "240m"]
 
+    prev = {}
+    try:
+        prev = signals.load(pair) or {}
+    except Exception:
+        prev = {}
+    prev_by_iv = {}
+    for ch in (prev.get("channels") or {}).values():
+        iv = ch.get("interval")
+        if iv and iv not in prev_by_iv:
+            prev_by_iv[iv] = ch
+
     now = time.time()
     merged_channels = {}
-    meta_out = {"ok": True, "pair": pair, "exchange": exchange}
 
     # check cache per (pair, iv)
     to_fetch = []
@@ -133,57 +200,66 @@ def acquire(pair="DOT/USD", strategy="swing", exchange=None, timeout=180,
         key = f"{pair}:{iv}"
         cached = _CACHE.get(key)
         if not force and cached and (now - cached["ts"]) < max_age:
-            merged_channels[cached["ch"].get("_key") or f"cached_{iv}"] = cached["ch"]
+            merged_channels[iv] = cached["ch"]
         else:
             to_fetch.append(iv)
 
     # batch to_fetch in groups of 3
     batches = [to_fetch[i:i+3] for i in range(0, len(to_fetch), 3)]
+    failed = []
+    started = time.time()
+    budget = max(timeout * 2, 240)
     for batch in batches:
         if not batch:
             continue
-        # run sidecar with this batch
-        RAW = BH / "logs" / f"signal_raw_{str(pair).replace('/', '-').upper()}_acq_{int(time.time()*1000)}.json"
-        cmd = [_node(), str(SIDECAR), "--pair", pair, "--strategy", "custom",
-               "--exchange", exchange, "--out", str(RAW)]
-        cmd += ["--channels", ",".join(batch)]
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=str(BH))
-        except subprocess.TimeoutExpired:
+        snap, info = _run_batch(pair, exchange, batch, timeout)
+        if snap:
+            _merge_channels(snap, merged_channels, pair, now)
             continue
-        try:
-            meta = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
-        except Exception:
-            meta = {"ok": False}
-        if not meta.get("ok"):
+        failed.append({"batch": list(batch), **info})
+        # Recover lane by lane: the market-structure cache is warm by now, so a
+        # single-interval retry is fast even when the 3-slot batch stalled.
+        if time.time() - started > budget:
+            _log({"event": "retry_budget_exhausted", "pair": pair, "batch": batch})
             continue
-        try:
-            raw = json.loads(RAW.read_text())
-        except Exception:
+        for iv in batch:
+            if iv in merged_channels:
+                continue
+            snap_i, info_i = _run_batch(pair, exchange, [iv], min(timeout, 120))
+            if snap_i:
+                _merge_channels(snap_i, merged_channels, pair, now)
+            else:
+                failed.append({"batch": [iv], **info_i})
+
+    fb = {}
+    if not merged_channels:
+        # old single-run fallback; may still succeed where the batches did not
+        fb = signalbot.run(pair=pair, strategy=strategy, exchange=exchange,
+                           channels=union[:3] if len(union)>=3 else union,
+                           merge_daytrade=merge_daytrade)
+        if fb.get("available"):
+            _merge_channels(fb, merged_channels, pair, now)
+
+    # A transient failed batch must never make a rung disappear: re-use the last
+    # good lane for that interval, clearly marked as carried so it is auditable.
+    carried = []
+    for iv in union:
+        if iv in merged_channels:
             continue
-        try:
-            snap = signalbot.normalize(raw, meta)
-        except Exception:
+        pc = prev_by_iv.get(iv)
+        if not pc:
             continue
-        # merge channels from this batch - dedupe by interval
-        for chkey, ch in (snap.get("channels") or {}).items():
-            iv = ch.get("interval")
-            if iv and iv not in merged_channels:
-                merged_channels[iv] = ch
-                _CACHE[f"{pair}:{iv}"] = {"ts": now, "ch": ch}
-            elif iv and iv in merged_channels:
-                # update cache if fresher
-                _CACHE[f"{pair}:{iv}"] = {"ts": now, "ch": merged_channels[iv]}
-        try:
-            RAW.unlink()
-        except Exception:
-            pass
+        c = dict(pc)
+        c["_carried"] = True
+        c["_carried_ts"] = prev.get("ts")
+        merged_channels[iv] = c
+        carried.append(iv)
+    if carried:
+        _log({"event": "carried_forward", "pair": pair, "intervals": carried,
+              "from": prev.get("ts")})
 
     if not merged_channels:
-        # fallback to old behavior
-        return signalbot.run(pair=pair, strategy=strategy, exchange=exchange,
-                             channels=union[:3] if len(union)>=3 else union,
-                             merge_daytrade=merge_daytrade)
+        return fb or {"available": False, "error": "no signal lanes acquired"}
 
     # build merged snapshot similar to signalbot.normalize structure
     # rank by interval
@@ -234,7 +310,14 @@ def acquire(pair="DOT/USD", strategy="swing", exchange=None, timeout=180,
         "channels": out_ch,
         "grids": {},
         "structure": {"aggregate": {}, "executionIntervals": None},
-        "_acq": {"union": union, "batches": len(batches), "cached": len(union)-len(to_fetch)},
+        "_acq": {
+            "union": union,
+            "batches": len(batches),
+            "cached": len(union) - len(to_fetch),
+            "failed": failed,
+            "carried": carried,
+            "missing": [iv for iv in union if iv not in by_iv],
+        },
     }
 
     # try to attach grids/structure from latest if available
