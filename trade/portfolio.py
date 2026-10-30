@@ -210,6 +210,12 @@ def close_position(pos_id: str, price: float, reason: str = "manual", fee_pct: f
                              fee_exit, reason, pos.get("exit_txid"))
     except Exception:
         pass
+    # Adjust agent capital on realized close per rules
+    try:
+        import agents
+        agents.adjust_capital_on_close(pos.get("agent"), net)
+    except Exception:
+        pass
     return {"ok": True, "net": round(net, 8), "record": rec}
 
 

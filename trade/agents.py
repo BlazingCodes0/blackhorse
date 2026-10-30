@@ -164,6 +164,56 @@ def _total_allocated(exclude: str = None) -> float:
                if a["id"] != exclude and a.get("kind") == "trading")
 
 
+def adjust_capital_on_close(agent_id: str, realized_pnl_net: float) -> dict:
+    """Adjust agent capital on realized close per user rules:
+    - On loss (pnl_net < 0): resize capital down to match (shrink)
+    - On gain (pnl_net > 0): grow only if allow_capital_grow is true
+    """
+    try:
+        if not agent_id:
+            return {"ok": False}
+        d = _load()
+        a = d["agents"].get(agent_id)
+        if not a:
+            return {"ok": False, "error": "agent not found"}
+        cap = float(a.get("capital", 0) or 0)
+        if realized_pnl_net < 0:
+            new_cap = cap + realized_pnl_net  # realized_pnl_net is negative
+            if new_cap < 0:
+                new_cap = 0.0
+            a["capital"] = round(new_cap, 8)
+            _save(d)
+            return {"ok": True, "action": "shrink", "old": cap, "new": a["capital"]}
+        elif realized_pnl_net > 0:
+            if bool(a.get("allow_capital_grow", False)):
+                a["capital"] = round(cap + realized_pnl_net, 8)
+                _save(d)
+                return {"ok": True, "action": "grow", "old": cap, "new": a["capital"]}
+            else:
+                return {"ok": True, "action": "none"}
+        else:
+            return {"ok": True, "action": "none"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def set_allow_capital_grow(agent_id: str, allow: bool) -> dict:
+    try:
+        d = _load()
+        a = d["agents"].get(agent_id)
+        if not a:
+            raise KeyError(f"unknown agent '{agent_id}'")
+        a["allow_capital_grow"] = bool(allow)
+        _save(d)
+        return a
+    except Exception as e:
+        raise
+
+
+def allow_grow(agent_id: str, allow: bool) -> dict:
+    return set_allow_capital_grow(agent_id, allow)
+
+
 def _available_capital() -> float:
     """Capital that exists to be allocated: the exchange truth (free cash + cash already
     deployed in positions/orders), else treasury."""

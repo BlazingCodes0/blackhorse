@@ -1,0 +1,221 @@
+{
+  "agents": {
+    "agent_1": {
+      "id": "agent_1",
+      "name": "Lifecycle",
+      "kind": "trading",
+      "enabled": true,
+      "capital": 35.0,
+      "policy_overrides": {
+        "entry_strength_max": 0.3,
+        "exit_strength_min": 0.7,
+        "require_tide_context": false,
+        "min_reward_risk": 1.2,
+        "stop_max_pct": 3.0,
+        "risk_per_trade_pct": 2.0,
+        "max_position_pct": 50.0,
+        "strategy_intervals": [
+          "15m",
+          "60m",
+          "240m"
+        ],
+        "strategy": "swing",
+        "star_alignment": false,
+        "rung_bands": {
+          "60m": {
+            "buy": [
+              0.0,
+              0.3
+            ],
+            "sell": [
+              0.7,
+              1.0
+            ]
+          },
+          "240m": {
+            "buy": [
+              0.0,
+              0.3
+            ],
+            "sell": [
+              0.7,
+              1.0
+            ]
+          }
+        }
+      },
+      "created": "2026-10-04T15:53:25Z",
+      "mode": "LIVE",
+      "pairs": [
+        "DOT/USD"
+      ]
+    },
+    "agent_6": {
+      "id": "agent_6",
+      "name": "Slow 6",
+      "kind": "trading",
+      "enabled": true,
+      "capital": 80.0,
+      "mode": "LIVE",
+      "policy_overrides": {
+        "min_reward_risk": 2.0,
+        "entry_order_type": "limit",
+        "entry_time_in_force": "FOK",
+        "strategy": "custom",
+        "strategy_intervals": [
+          "60m",
+          "240m"
+        ],
+        "entry_strength_max": 0.3,
+        "exit_strength_min": 0.8,
+        "max_position_pct": 50.0,
+        "rung_bands": {
+          "240m": {
+            "buy": [
+              0.0,
+              0.5
+            ],
+            "sell": [
+              0.8,
+              1.0
+            ]
+          }
+        },
+        "star_alignment": false,
+        "stop_mode": "trailing",
+        "require_ma_cross_agreement": false,
+        "rungs_only": true
+      },
+      "created": "2026-10-07T11:48:07Z",
+      "pairs": [
+        "DOT/USD"
+      ]
+    },
+    "agent_7": {
+      "id": "agent_7",
+      "name": "15m 7",
+      "kind": "trading",
+      "enabled": true,
+      "capital": 20.0,
+      "mode": "LIVE",
+      "policy_overrides": {
+        "entry_strength_max": 0.25,
+        "exit_strength_min": 0.75,
+        "min_reward_risk": 1.2,
+        "stop_max_pct": 2.0,
+        "risk_per_trade_pct": 1.5,
+        "max_position_pct": 40.0,
+        "strategy_intervals": [
+          "15m",
+          "60m"
+        ],
+        "strategy": "custom",
+        "stop_mode": "price_watch",
+        "rung_bands": {
+          "60m": {
+            "buy": [
+              0.0,
+              0.2
+            ],
+            "sell": [
+              0.85,
+              1.0
+            ]
+          }
+        },
+        "star_alignment": true
+      },
+      "created": "2026-10-15T06:41:32Z",
+      "pairs": [
+        "DOT/USD"
+      ]
+    },
+    "agent_8": {
+      "id": "agent_8",
+      "name": "5m 8",
+      "kind": "trading",
+      "profile": null,
+      "enabled": true,
+      "capital": 45.0,
+      "mode": "LIVE",
+      "policy_overrides": {
+        "entry_strength_max": 0.25,
+        "exit_strength_min": 0.75,
+        "min_reward_risk": 1.2,
+        "stop_max_pct": 1.5,
+        "risk_per_trade_pct": 1.0,
+        "max_position_pct": 10.0,
+        "strategy_intervals": [
+          "5m",
+          "15m",
+          "60m"
+        ],
+        "strategy": "daytrade",
+        "star_alignment": false,
+        "require_ma_cross_agreement": true,
+        "rung_bands": {
+          "15m": {
+            "buy": [
+              0.0,
+              0.3
+            ],
+            "sell": [
+              0.75,
+              1.0
+            ]
+          },
+          "60m": {
+            "buy": [
+              0.0,
+              0.25
+            ],
+            "sell": [
+              0.75,
+              1.0
+            ]
+          }
+        }
+      },
+      "created": "2026-10-23T22:01:49Z",
+      "pairs": []
+    },
+    "agent_10": {
+      "id": "agent_10",
+      "name": "60m 10",
+      "kind": "trading",
+      "profile": null,
+      "enabled": true,
+      "capital": 15.86011673,
+      "mode": "LIVE",
+      "policy_overrides": {
+        "entry_strength_max": 0.2,
+        "exit_strength_min": 0.85,
+        "min_reward_risk": 1.5,
+        "stop_max_pct": 3.0,
+        "risk_per_trade_pct": 2.0,
+        "max_position_pct": 30.0,
+        "strategy_intervals": [
+          "60m",
+          "240m"
+        ],
+        "strategy": "custom",
+        "star_alignment": false,
+        "rung_bands": {
+          "240m": {
+            "buy": [
+              0.0,
+              0.2
+            ],
+            "sell": [
+              0.85,
+              1.0
+            ]
+          }
+        },
+        "stop_loss_enabled": true
+      },
+      "created": "2026-10-24T12:08:24Z"
+    }
+  },
+  "next_id": 11
+}
