@@ -179,6 +179,8 @@ SETTINGS = [
          "it turns it OFF. e.g. 15m,60m,240m — dynamic: any interval you list becomes a rung "
          "with its own editable buy/sell range."),
         ("capital", "Capital $", "float", "agent", "Budget this agent may size from (bounded by real free cash)."),
+        ("allow_capital_grow", "Allow capital to grow on wins", "bool", "agent",
+         "ON = add net profit to this agent's capital on realized wins. OFF = shrink on losses only, keep capital the same on wins (default)."),
     ]),
     ("Entry (buy)", [
         ("entry_strength_max", "Entry buy range top (≤)", "float", "policy",
@@ -1429,6 +1431,8 @@ class AgentsMixin:
                     agents.set_mode(aid, val)
                 elif key == 'capital':
                     agents.set_capital(aid, val, allow_over=True)
+                elif key == 'allow_capital_grow':
+                    agents.set_allow_capital_grow(aid, bool(val))
                 else:
                     agents.set_override(aid, key, val)
                 changed.append(key)
